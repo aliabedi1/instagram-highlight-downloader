@@ -19,9 +19,9 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = headerStore.get("x-forwarded-host") || headerStore.get("host");
   const protocol = headerStore.get("x-forwarded-proto") || "https";
   const origin = host ? `${protocol}://${host}` : "http://localhost:3000";
-  const title = "Keepsake — Instagram Highlight Downloader";
+  const title = "Keepsake — Local Instagram Highlight Archiver";
   const description =
-    "Save public Instagram highlight photos and videos in their original quality.";
+    "Archive every Instagram highlight into organized local folders by username and highlight name.";
 
   return {
     title,

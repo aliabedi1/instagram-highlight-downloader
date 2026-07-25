@@ -1,98 +1,68 @@
-# vinext-starter
+# Keepsake
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+A local Instagram highlight archiver for Windows. Paste a profile link, browse
+its highlight circles and stories in Instagram order, download individual
+stories, or download every highlight as one ZIP:
 
-## Prerequisites
-
-- Node.js `>=22.13.0`
-
-## Quick Start
-
-```bash
-npm install
-npm run dev
-npm run build
+```text
+downloads/
+└── username/
+    ├── Highlight name/
+    │   ├── 1.jpg
+    │   ├── 2.mp4
+    │   └── 3.jpg
+    └── Another highlight/
+        └── 1.jpg
 ```
 
-This starter does not use `wrangler.jsonc`.
+The ZIP preserves the same structure:
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```text
+username-highlights-YYYYMMDD-HHMMSS.zip
+└── username/
+    └── Highlight name/
+        ├── 1.jpg
+        ├── 2.mp4
+        └── 3.jpg
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+## Start
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+Right-click `start-local.ps1` and choose **Run with PowerShell**, or run:
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+```powershell
+.\start-local.ps1
+```
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+Then open [http://localhost:3000](http://localhost:3000).
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+## First use
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+Instagram requires a logged-in viewer session to list highlights, including for
+public profiles.
 
-## Useful Commands
+1. In Keepsake, click **Connect another account**.
+2. Enter your Instagram username.
+3. Complete password and two-factor authentication in the separate terminal.
+4. Return to Keepsake and click **Refresh**.
+5. Paste the target profile link and click **Show highlights**.
+6. Open any highlight to preview and download its stories, or choose
+   **Download all as ZIP**.
 
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+Keepsake never receives or saves your Instagram password. Instaloader stores a
+reusable local session under `.sessions/`, which is excluded from Git.
 
-## Learn More
+## Local folders
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+- Downloads: `downloads/`
+- Instagram sessions: `.sessions/`
+- Python environment: `.venv/`
+
+Set `KEEPSAKE_DOWNLOAD_ROOT` before starting the app to use a different
+download directory.
+
+## Notes
+
+- Use this only for content you own or have permission to save.
+- Instagram may rate-limit repeated requests.
+- If a session expires, connect the viewer account again.

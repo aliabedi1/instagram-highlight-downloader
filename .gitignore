@@ -32,8 +32,13 @@ yarn-error.log*
 .env*
 .dev.log
 .dev.pid
-.dev.log
-.dev.pid
+.venv/
+.sessions/
+downloads/
+__pycache__/
+*.pyc
+.local-*.log
+.local-*.pid
 
 # vercel
 .vercel
