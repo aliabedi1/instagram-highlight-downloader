@@ -45,6 +45,9 @@ media_registry: dict[str, dict[str, str]] = {}
 media_lock = threading.Lock()
 rate_limit_until: dict[str, float] = {}
 rate_limit_lock = threading.Lock()
+scan_cache: dict[tuple[str, str], dict[str, Any]] = {}
+scan_cache_lock = threading.Lock()
+SCAN_CACHE_TTL_SECONDS = 10 * 60
 
 
 class UsernameRequest(BaseModel):
@@ -166,8 +169,17 @@ def load_profile_and_highlights(
 ) -> tuple[instaloader.Instaloader, instaloader.Profile, list[instaloader.Highlight]]:
     target = clean_target(target_username)
     viewer = clean_username(session_username)
+    cache_key = (viewer, target)
+    now = time.time()
+    with scan_cache_lock:
+        cached = scan_cache.get(cache_key)
+        if cached and now - cached["created_at"] < SCAN_CACHE_TTL_SECONDS:
+            return cached["loader"], cached["profile"], cached["highlights"]
+        if cached:
+            scan_cache.pop(cache_key, None)
+
     with rate_limit_lock:
-        remaining = rate_limit_until.get(viewer, 0) - time.time()
+        remaining = rate_limit_until.get(viewer, 0) - now
     if remaining > 0:
         minutes = max(1, int(remaining / 60) + 1)
         raise HTTPException(
@@ -183,6 +195,13 @@ def load_profile_and_highlights(
     try:
         profile = instaloader.Profile.from_username(loader.context, target)
         highlights = list(loader.get_highlights(profile))
+        with scan_cache_lock:
+            scan_cache[cache_key] = {
+                "created_at": time.time(),
+                "loader": loader,
+                "profile": profile,
+                "highlights": highlights,
+            }
         return loader, profile, highlights
     except instaloader.exceptions.ProfileNotExistsException as exc:
         raise HTTPException(status_code=404, detail=f"@{target} was not found.") from exc
@@ -290,6 +309,29 @@ def register_story_media(
             for stale_token in list(media_registry)[:500]:
                 media_registry.pop(stale_token, None)
     return token
+
+
+def story_payload(
+    item: instaloader.StoryItem,
+    index: int,
+    session_username: str,
+) -> dict[str, Any]:
+    media_url = item.video_url if item.is_video else item.url
+    extension = media_extension(item, media_url)
+    filename = f"{index}{extension}"
+    token = register_story_media(
+        media_url=media_url,
+        session_username=clean_username(session_username),
+        filename=filename,
+    )
+    return {
+        "id": str(item.mediaid),
+        "position": index,
+        "type": "video" if item.is_video else "image",
+        "filename": filename,
+        "preview_url": f"http://127.0.0.1:8787/api/media/{token}?download=false",
+        "download_url": f"http://127.0.0.1:8787/api/media/{token}?download=true",
+    }
 
 
 def run_download(
@@ -452,6 +494,10 @@ def scan_highlights(request: ScanRequest) -> dict[str, Any]:
             "full_name": profile.full_name,
             "profile_pic_url": profile.profile_pic_url,
             "is_private": profile.is_private,
+            "biography": profile.biography,
+            "posts": profile.mediacount,
+            "followers": profile.followers,
+            "following": profile.followees,
         },
         "highlights": [
             highlight_payload(highlight, index)
@@ -477,31 +523,55 @@ def scan_highlight_stories(request: StoriesRequest) -> dict[str, Any]:
     if highlight is None:
         raise HTTPException(status_code=404, detail="That highlight was not found.")
 
-    stories: list[dict[str, Any]] = []
-    for index, item in enumerate(highlight.get_items(), start=1):
-        media_url = item.video_url if item.is_video else item.url
-        extension = media_extension(item, media_url)
-        filename = f"{index}{extension}"
-        token = register_story_media(
-            media_url=media_url,
-            session_username=clean_username(request.session_username),
-            filename=filename,
-        )
-        stories.append(
-            {
-                "id": str(item.mediaid),
-                "position": index,
-                "type": "video" if item.is_video else "image",
-                "filename": filename,
-                "preview_url": f"http://127.0.0.1:8787/api/media/{token}?download=false",
-                "download_url": f"http://127.0.0.1:8787/api/media/{token}?download=true",
-            }
-        )
+    stories = [
+        story_payload(item, index, request.session_username)
+        for index, item in enumerate(highlight.get_items(), start=1)
+    ]
 
     return {
         "profile_username": profile.username,
         "highlight": highlight_payload(highlight, 0),
         "stories": stories,
+    }
+
+
+@app.post("/api/stories/active")
+def scan_active_stories(request: ScanRequest) -> dict[str, Any]:
+    loader, profile, _ = load_profile_and_highlights(
+        request.target_username, request.session_username
+    )
+    try:
+        trays = list(loader.get_stories(userids=[profile.userid]))
+        items = list(trays[0].get_items()) if trays else []
+    except instaloader.exceptions.LoginRequiredException as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="Instagram rejected the saved session. Connect your account again.",
+        ) from exc
+    except instaloader.exceptions.ConnectionException as exc:
+        if "429" in str(exc) or "Too Many Requests" in str(exc):
+            with rate_limit_lock:
+                rate_limit_until[clean_username(request.session_username)] = (
+                    time.time() + (10 * 60)
+                )
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Instagram temporarily rate-limited this connection. "
+                    "Wait about 10 minutes before trying again."
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Instagram could not load current stories: {exc}",
+        ) from exc
+
+    return {
+        "profile_username": profile.username,
+        "stories": [
+            story_payload(item, index, request.session_username)
+            for index, item in enumerate(items, start=1)
+        ],
     }
 
 

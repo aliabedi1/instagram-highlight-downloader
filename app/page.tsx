@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 const API = "http://127.0.0.1:8787/api";
+const REQUEST_TIMEOUT = 35_000;
 
 type Highlight = {
   id: string;
@@ -12,13 +13,19 @@ type Highlight = {
   position: number;
 };
 
+type Profile = {
+  username: string;
+  full_name: string;
+  profile_pic_url: string;
+  is_private: boolean;
+  biography: string;
+  posts: number;
+  followers: number;
+  following: number;
+};
+
 type ScanResult = {
-  profile: {
-    username: string;
-    full_name: string;
-    profile_pic_url: string;
-    is_private: boolean;
-  };
+  profile: Profile;
   highlights: Highlight[];
   download_path: string;
 };
@@ -33,7 +40,7 @@ type Story = {
 };
 
 type StoryResult = {
-  highlight: Highlight;
+  highlight?: Highlight;
   stories: Story[];
 };
 
@@ -47,32 +54,15 @@ type Job = {
   current_highlight: string;
   current_story: number;
   current_story_total: number;
-  output_path?: string;
   archive_name?: string;
   error?: string;
 };
 
-function InstagramIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="3" y="3" width="18" height="18" rx="5" />
-      <circle cx="12" cy="12" r="4.2" />
-      <circle className="dot" cx="17.4" cy="6.7" r="1" />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 7.5h7l2-2h9v14H3z" />
-    </svg>
-  );
-}
+type Tab = "stories" | "highlights";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 30000);
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
   try {
     const response = await fetch(`${API}${path}`, {
       ...options,
@@ -85,7 +75,7 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(
-        "Instagram did not respond within 30 seconds. The scan was stopped; wait a few minutes before trying again.",
+        "Instagram is taking longer than expected. Wait a few minutes, then try again.",
       );
     }
     throw error;
@@ -94,30 +84,49 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   }
 }
 
+function formatCount(value: number) {
+  return new Intl.NumberFormat("en", {
+    notation: value >= 10_000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function InstagramIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="5" />
+      <circle cx="12" cy="12" r="4.2" />
+      <circle className="dot" cx="17.4" cy="6.7" r="1" />
+    </svg>
+  );
+}
+
 export default function Home() {
   const [target, setTarget] = useState("");
   const [viewer, setViewer] = useState("");
-  const [sessions, setSessions] = useState<string[]>([]);
-  const [downloadRoot, setDownloadRoot] = useState("");
+  const [serviceReady, setServiceReady] = useState<boolean | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
+  const [tab, setTab] = useState<Tab>("highlights");
   const [activeHighlight, setActiveHighlight] = useState<Highlight | null>(null);
   const [stories, setStories] = useState<Story[]>([]);
-  const [storiesLoading, setStoriesLoading] = useState(false);
-  const [job, setJob] = useState<Job | null>(null);
-  const [status, setStatus] = useState<"idle" | "scanning" | "error">("idle");
+  const [storiesLoaded, setStoriesLoaded] = useState(false);
+  const [loading, setLoading] = useState<"profile" | "stories" | "highlight" | "">("");
   const [message, setMessage] = useState("");
+  const [job, setJob] = useState<Job | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("");
 
   const refreshStatus = useCallback(async () => {
     try {
-      const data = await api<{ sessions: string[]; download_root: string }>("/status");
-      setSessions(data.sessions);
-      setDownloadRoot(data.download_root);
-      setViewer((current) => current || data.sessions[0] || "");
-      setMessage("");
+      const data = await api<{ sessions: string[] }>("/status");
+      setServiceReady(true);
+      setViewer((current) =>
+        current && data.sessions.includes(current) ? current : data.sessions[0] || "",
+      );
+      return data.sessions;
     } catch {
-      setMessage("The local download service is not running. Start the app with start-local.ps1.");
+      setServiceReady(false);
+      return [];
     }
   }, []);
 
@@ -129,11 +138,16 @@ export default function Home() {
     if (!job || !["queued", "downloading"].includes(job.status)) return;
     const timer = window.setInterval(async () => {
       try {
-        const next = await api<Job>(`/jobs/${job.id}`);
-        setJob(next);
+        setJob(await api<Job>(`/jobs/${job.id}`));
       } catch (error) {
         setJob((current) =>
-          current ? { ...current, status: "error", error: String(error) } : null,
+          current
+            ? {
+                ...current,
+                status: "error",
+                error: error instanceof Error ? error.message : "Download stopped.",
+              }
+            : null,
         );
       }
     }, 1200);
@@ -145,73 +159,126 @@ export default function Home() {
     return Math.min(100, Math.round((job.downloaded_items / job.total_items) * 100));
   }, [job]);
 
-  async function handleScan(event: FormEvent) {
+  async function pasteLink() {
+    try {
+      setTarget(await navigator.clipboard.readText());
+      setMessage("");
+    } catch {
+      setMessage("Clipboard access was blocked. Paste the Instagram link manually.");
+    }
+  }
+
+  async function handleSearch(event: FormEvent) {
     event.preventDefault();
-    setStatus("scanning");
     setMessage("");
     setScan(null);
+    setStories([]);
+    setStoriesLoaded(false);
+    setActiveHighlight(null);
     setJob(null);
+
+    if (!serviceReady) {
+      setMessage("Start Keepsake on this computer first, then try again.");
+      return;
+    }
+    if (!viewer) {
+      setMessage("Connect an Instagram account once to view public stories and highlights.");
+      setLoginOpen(true);
+      return;
+    }
+
+    setLoading("profile");
     try {
-      const data = await api<ScanResult>("/highlights/scan", {
+      const result = await api<ScanResult>("/highlights/scan", {
         method: "POST",
         body: JSON.stringify({
           target_username: target,
           session_username: viewer,
         }),
       });
-      setScan(data);
-      setStatus("idle");
-      if (data.highlights[0]) {
-        await loadStories(data.highlights[0], data.profile.username);
-      }
+      setScan(result);
+      setTab("highlights");
     } catch (error) {
-      setStatus("error");
-      setMessage(error instanceof Error ? error.message : "Could not load highlights.");
+      setMessage(error instanceof Error ? error.message : "Could not load that profile.");
+    } finally {
+      setLoading("");
     }
   }
 
-  async function loadStories(highlight: Highlight, profileUsername?: string) {
-    setActiveHighlight(highlight);
-    setStories([]);
-    setStoriesLoading(true);
+  async function showStories() {
+    if (!scan) return;
+    setTab("stories");
+    setActiveHighlight(null);
     setMessage("");
+    if (storiesLoaded) return;
+
+    setLoading("stories");
     try {
-      const data = await api<StoryResult>("/highlights/stories", {
+      const result = await api<StoryResult>("/stories/active", {
         method: "POST",
         body: JSON.stringify({
-          target_username: profileUsername || scan?.profile.username || target,
+          target_username: scan.profile.username,
+          session_username: viewer,
+        }),
+      });
+      setStories(result.stories);
+      setStoriesLoaded(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load stories.");
+    } finally {
+      setLoading("");
+    }
+  }
+
+  function showHighlights() {
+    setTab("highlights");
+    setActiveHighlight(null);
+    setStories([]);
+    setMessage("");
+  }
+
+  async function openHighlight(highlight: Highlight) {
+    if (!scan) return;
+    setActiveHighlight(highlight);
+    setStories([]);
+    setMessage("");
+    setLoading("highlight");
+    try {
+      const result = await api<StoryResult>("/highlights/stories", {
+        method: "POST",
+        body: JSON.stringify({
+          target_username: scan.profile.username,
           session_username: viewer,
           highlight_id: highlight.id,
         }),
       });
-      setStories(data.stories);
+      setStories(result.stories);
     } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Could not open that highlight.",
-      );
+      setMessage(error instanceof Error ? error.message : "Could not open that highlight.");
     } finally {
-      setStoriesLoading(false);
+      setLoading("");
     }
   }
 
   async function connectSession() {
+    setMessage("");
     try {
-      const data = await api<{ message: string }>("/session/login", {
+      const result = await api<{ message: string }>("/session/login", {
         method: "POST",
         body: JSON.stringify({ username: loginName }),
       });
-      setMessage(data.message);
+      setMessage(result.message);
       setLoginOpen(false);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not open login.");
+      setMessage(error instanceof Error ? error.message : "Could not open Instagram login.");
     }
   }
 
-  async function startDownload() {
+  async function startDownloadAll() {
     if (!scan) return;
     setMessage("");
     try {
-      const data = await api<{ job_id: string }>("/highlights/download", {
+      const result = await api<{ job_id: string }>("/highlights/download", {
         method: "POST",
         body: JSON.stringify({
           target_username: scan.profile.username,
@@ -220,15 +287,12 @@ export default function Home() {
         }),
       });
       setJob({
-        id: data.job_id,
+        id: result.job_id,
         status: "queued",
         username: scan.profile.username,
         downloaded_items: 0,
         skipped_items: 0,
-        total_items: scan.highlights.reduce(
-          (sum, highlight) => sum + highlight.item_count,
-          0,
-        ),
+        total_items: scan.highlights.reduce((sum, item) => sum + item.item_count, 0),
         current_highlight: "",
         current_story: 0,
         current_story_total: 0,
@@ -238,10 +302,6 @@ export default function Home() {
     }
   }
 
-  async function openDownloads() {
-    await api("/open-downloads", { method: "POST" });
-  }
-
   return (
     <main>
       <nav className="nav" aria-label="Main navigation">
@@ -249,234 +309,266 @@ export default function Home() {
           <span className="brand-mark"><InstagramIcon /></span>
           keepsake
         </a>
-        <span className="local-badge"><span /> Running locally</span>
+        <span className={`service-badge ${serviceReady ? "online" : "offline"}`}>
+          <span />
+          {serviceReady === null
+            ? "Checking this computer"
+            : serviceReady
+              ? viewer
+                ? `Connected as @${viewer}`
+                : "Instagram not connected"
+              : "Local service is off"}
+        </span>
       </nav>
 
-      <section className="hero local-hero">
-        <div className="eyebrow"><span className="eyebrow-icon">✦</span>INSTAGRAM HIGHLIGHT ARCHIVER</div>
-        <h1>One profile.<br /><em>Every highlight.</em></h1>
+      <section className="hero">
+        <div className="eyebrow">PRIVATE · LOCAL · NO WATERMARKS</div>
+        <h1>Instagram stories,<br /><em>saved simply.</em></h1>
         <p className="intro">
-          See highlights exactly as they’re organized on Instagram, then save
-          every story into clean, named folders on your computer.
+          Paste a public Instagram profile link to browse its current stories
+          and highlights, then download exactly what you need.
         </p>
 
-        <form className="username-form" onSubmit={handleScan}>
-          <div className="username-field">
-            <label htmlFor="target">Instagram profile link</label>
-            <div className="username-input">
-              <span>↗</span>
-              <input
-                id="target"
-                value={target}
-                onChange={(event) => setTarget(event.target.value)}
-                placeholder="https://www.instagram.com/natgeo/"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </div>
-          </div>
-          <div className="session-field">
-            <label htmlFor="session">Connected as</label>
-            <div className="session-row">
-              <select
-                id="session"
-                value={viewer}
-                onChange={(event) => setViewer(event.target.value)}
-              >
-                <option value="">Choose a session</option>
-                {sessions.map((session) => (
-                  <option key={session} value={session}>@{session}</option>
-                ))}
-              </select>
-              <button type="button" className="refresh-button" onClick={refreshStatus}>
-                Refresh
+        <form className="search-form" onSubmit={handleSearch}>
+          <label htmlFor="instagram-link" className="sr-only">Instagram profile link</label>
+          <div className="search-input">
+            <span className="link-glyph">↗</span>
+            <input
+              id="instagram-link"
+              value={target}
+              onChange={(event) => setTarget(event.target.value)}
+              placeholder="https://www.instagram.com/username/"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {target ? (
+              <button type="button" className="input-action" onClick={() => setTarget("")}>
+                Clear
               </button>
-            </div>
+            ) : (
+              <button type="button" className="input-action" onClick={pasteLink}>
+                Paste
+              </button>
+            )}
           </div>
-          <button className="scan-button" type="submit" disabled={!target || !viewer || status === "scanning"}>
-            {status === "scanning" ? "Finding highlights…" : "Show highlights"}
-            {status !== "scanning" && <span>→</span>}
+          <button
+            className="download-button"
+            type="submit"
+            disabled={!target.trim() || loading === "profile"}
+          >
+            {loading === "profile" ? "Finding profile…" : "Show stories"}
+            {loading !== "profile" && <span>→</span>}
           </button>
         </form>
 
-        <div className="connect-line">
-          <span>Instagram requires a viewer session, even for public highlights.</span>
-          <button type="button" onClick={() => setLoginOpen(true)}>Connect another account</button>
+        <div className="helper-row">
+          <span>Public profiles only. Use content you own or have permission to save.</span>
+          {serviceReady ? (
+            <button type="button" onClick={() => setLoginOpen(true)}>
+              {viewer ? "Connect another account" : "Connect Instagram"}
+            </button>
+          ) : (
+            <span className="start-hint">Run <b>start-local.ps1</b> on this computer</span>
+          )}
         </div>
 
         {message && (
-          <div className={`status-card ${status === "error" ? "error-card" : "info-card"}`} role="status">
-            <span>{status === "error" ? "!" : "i"}</span>
+          <div className="notice" role="status">
+            <span>!</span>
             <p>{message}</p>
+            {serviceReady && (
+              /rate-limit|temporarily/i.test(message) ? (
+                <button type="button" onClick={() => setLoginOpen(true)}>
+                  Use another account
+                </button>
+              ) : (
+                <button type="button" onClick={refreshStatus}>Refresh connection</button>
+              )
+            )}
           </div>
         )}
       </section>
 
       {scan && (
-        <section className="library">
-          <div className="profile-row">
+        <section className="results" aria-live="polite">
+          <header className="profile-card">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={scan.profile.profile_pic_url} alt="" className="profile-photo" />
-            <div>
-              <span className="result-owner">@{scan.profile.username}</span>
+            <div className="profile-copy">
+              <span className="result-label">SEARCH RESULT</span>
               <h2>{scan.profile.full_name || scan.profile.username}</h2>
-              <p>{scan.highlights.length} highlights · {scan.highlights.reduce((sum, item) => sum + item.item_count, 0)} stories</p>
+              <a
+                href={`https://www.instagram.com/${scan.profile.username}/`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                @{scan.profile.username} ↗
+              </a>
+              {scan.profile.biography && <p>{scan.profile.biography}</p>}
             </div>
-            <span className="profile-ready">Ready to browse</span>
-          </div>
+            <dl className="profile-stats">
+              <div><dt>{formatCount(scan.profile.posts)}</dt><dd>posts</dd></div>
+              <div><dt>{formatCount(scan.profile.followers)}</dt><dd>followers</dd></div>
+              <div><dt>{formatCount(scan.profile.following)}</dt><dd>following</dd></div>
+            </dl>
+          </header>
 
-          {scan.highlights.length ? (
-            <div className="highlight-strip">
-              {scan.highlights.map((highlight) => (
-                <button
-                  type="button"
-                  className={`highlight-card ${activeHighlight?.id === highlight.id ? "selected" : ""}`}
-                  key={highlight.id}
-                  onClick={() => loadStories(highlight)}
-                  aria-pressed={activeHighlight?.id === highlight.id}
-                >
-                  <span className="highlight-ring">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={highlight.cover_url} alt="" />
-                    <i>{activeHighlight?.id === highlight.id ? "●" : ""}</i>
-                  </span>
-                  <strong>{highlight.title}</strong>
-                  <small>{highlight.item_count} stories</small>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-highlights">This profile has no visible highlights.</div>
-          )}
-
-          {activeHighlight && (
-            <div className="story-browser">
-              <div className="story-browser-head">
-                <div>
-                  <span className="result-owner">SELECTED HIGHLIGHT</span>
-                  <h3>{activeHighlight.title}</h3>
-                  <p>{activeHighlight.item_count} stories in Instagram order</p>
-                </div>
-                <span className="order-note">1 → {activeHighlight.item_count}</span>
-              </div>
-
-              {storiesLoading ? (
-                <div className="stories-loading">
-                  <span className="loader" />
-                  Loading stories…
-                </div>
-              ) : (
-                <div className="story-grid">
-                  {stories.map((story) => (
-                    <article className="story-card" key={story.id}>
-                      <div className="story-media">
-                        {story.type === "video" ? (
-                          <video
-                            src={story.preview_url}
-                            controls
-                            preload="metadata"
-                          />
-                        ) : (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={story.preview_url} alt={`${activeHighlight.title} story ${story.position}`} />
-                        )}
-                        <span className="story-number">{story.position}</span>
-                        <span className="story-type">{story.type}</span>
-                      </div>
-                      <div className="story-card-foot">
-                        <span>{story.filename}</span>
-                        <a href={story.download_url} download={story.filename}>
-                          Download <b>↓</b>
-                        </a>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="folder-preview">
-            <div className="folder-tree">
-              <span className="folder-icon"><FolderIcon /></span>
-              <div>
-                <strong>{scan.profile.username}/</strong>
-                <p>
-                  {scan.highlights.length} highlight folders · 1, 2, 3, …
-                </p>
-              </div>
-            </div>
-            <button type="button" onClick={startDownload} disabled={!scan.highlights.length || job?.status === "downloading"}>
-              Download all as ZIP
-              <span>⇩</span>
+          <div className="result-tabs" role="tablist" aria-label="Profile media">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "stories"}
+              className={tab === "stories" ? "active" : ""}
+              onClick={showStories}
+            >
+              Stories
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "highlights"}
+              className={tab === "highlights" ? "active" : ""}
+              onClick={showHighlights}
+            >
+              Highlights <span>{scan.highlights.length}</span>
             </button>
           </div>
+
+          {tab === "highlights" && !activeHighlight && (
+            <>
+              {scan.highlights.length ? (
+                <div className="highlight-grid">
+                  {scan.highlights.map((highlight) => (
+                    <button
+                      type="button"
+                      className="highlight-tile"
+                      key={highlight.id}
+                      onClick={() => openHighlight(highlight)}
+                    >
+                      <span className="highlight-cover">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={highlight.cover_url} alt="" />
+                      </span>
+                      <strong>{highlight.title}</strong>
+                      <small>{highlight.item_count} items</small>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-state">
+                  This profile has no visible highlights.
+                </div>
+              )}
+              {!!scan.highlights.length && (
+                <div className="bulk-row">
+                  <div>
+                    <strong>Save the complete collection</strong>
+                    <span>Highlight names and story order are preserved in one ZIP.</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={startDownloadAll}
+                    disabled={job?.status === "queued" || job?.status === "downloading"}
+                  >
+                    Download all as ZIP ↓
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {tab === "highlights" && activeHighlight && (
+            <div className="media-panel">
+              <div className="panel-heading">
+                <button type="button" onClick={showHighlights}>← All highlights</button>
+                <div>
+                  <span>SELECTED HIGHLIGHT</span>
+                  <h3>{activeHighlight.title}</h3>
+                </div>
+                <small>{activeHighlight.item_count} items</small>
+              </div>
+              <MediaGrid
+                stories={stories}
+                loading={loading === "highlight"}
+                emptyText="This highlight has no available media."
+              />
+            </div>
+          )}
+
+          {tab === "stories" && (
+            <div className="media-panel">
+              <div className="panel-heading">
+                <div>
+                  <span>LAST 24 HOURS</span>
+                  <h3>Current stories</h3>
+                </div>
+                {storiesLoaded && <small>{stories.length} items</small>}
+              </div>
+              <MediaGrid
+                stories={stories}
+                loading={loading === "stories"}
+                emptyText="There are no current stories for this profile. Try again later."
+              />
+            </div>
+          )}
         </section>
       )}
 
       {job && (
-        <section className={`download-job ${job.status}`}>
-          <div className="job-top">
-            <div>
-              <span className="section-number">
-                {job.status === "complete" ? "ARCHIVE COMPLETE" : "BUILDING YOUR ARCHIVE"}
-              </span>
-              <h2>
-                {job.status === "complete"
-                  ? `Saved @${job.username}`
-                  : job.status === "error"
-                    ? "Download stopped"
-                    : job.current_highlight || "Preparing highlights…"}
-              </h2>
-              <p>
-                {job.status === "complete"
-                  ? `${job.downloaded_items} stories are organized and ready.`
-                  : job.status === "error"
-                    ? job.error
-                    : `Story ${job.current_story || "—"} of ${job.current_story_total || "—"} · ${job.downloaded_items} of ${job.total_items} total`}
-              </p>
-            </div>
-            {job.status === "complete" && (
-              <div className="job-actions">
-                <a href={`${API}/jobs/${job.id}/archive`} download={job.archive_name}>
-                  <span>⇩</span> Download ZIP
-                </a>
-                <button type="button" onClick={openDownloads}><FolderIcon /> Open folder</button>
-              </div>
-            )}
+        <section className={`job-card ${job.status}`}>
+          <div>
+            <span>{job.status === "complete" ? "ARCHIVE READY" : "BUILDING ARCHIVE"}</span>
+            <h2>
+              {job.status === "error"
+                ? "Download stopped"
+                : job.status === "complete"
+                  ? `@${job.username} is ready`
+                  : job.current_highlight || "Preparing highlights…"}
+            </h2>
+            <p>
+              {job.status === "error"
+                ? job.error
+                : `${job.downloaded_items} of ${job.total_items} stories prepared`}
+            </p>
           </div>
-          {job.status !== "error" && (
-            <div className="progress-track"><span style={{ width: `${job.status === "complete" ? 100 : progress}%` }} /></div>
+          {job.status === "complete" && (
+            <a href={`${API}/jobs/${job.id}/archive`} download={job.archive_name}>
+              Download ZIP ↓
+            </a>
           )}
-          {job.output_path && <code>{job.output_path}</code>}
+          {job.status !== "error" && (
+            <div className="progress"><span style={{ width: `${job.status === "complete" ? 100 : progress}%` }} /></div>
+          )}
         </section>
       )}
 
-      <section className="structure-section">
+      <section className="steps">
+        <span className="result-label">HOW IT WORKS</span>
+        <h2>Three small steps.</h2>
         <div>
-          <span className="section-number">THE OUTPUT</span>
-          <h2>Your archive,<br />already organized.</h2>
-          <p>Highlight names and story order are preserved, with safe filenames for Windows.</p>
+          <article><b>01</b><h3>Paste a profile</h3><p>Copy the public Instagram profile URL and paste it above.</p></article>
+          <article><b>02</b><h3>Choose media</h3><p>Open current stories or browse highlights in their original order.</p></article>
+          <article><b>03</b><h3>Download</h3><p>Save one item or download every highlight as an organized ZIP.</p></article>
         </div>
-        <pre aria-label="Example folder structure">{`downloads/
-└── username/
-    ├── Travel/
-    │   ├── 1.jpg
-    │   ├── 2.mp4
-    │   └── 3.jpg
-    └── Behind the scenes/
-        ├── 1.mp4
-        └── 2.jpg`}</pre>
       </section>
 
       {loginOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setLoginOpen(false)}>
-          <div className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title" onMouseDown={(event) => event.stopPropagation()}>
-            <span className="modal-kicker">LOCAL SESSION</span>
+        <div className="modal-backdrop" onMouseDown={() => setLoginOpen(false)}>
+          <div
+            className="login-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="login-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <span className="result-label">ONE-TIME LOCAL SETUP</span>
             <h2 id="login-title">Connect Instagram</h2>
-            <p>A separate terminal will ask Instagram for your password and any 2FA code. Keepsake never receives or stores your password.</p>
+            <p>
+              Instagram requires a signed-in viewer even for public highlights.
+              Your password is entered only in Instagram’s local login terminal.
+            </p>
             <label htmlFor="login-username">Your Instagram username</label>
-            <div className="username-input">
+            <div className="modal-input">
               <span>@</span>
               <input
                 id="login-username"
@@ -487,18 +579,60 @@ export default function Home() {
               />
             </div>
             <div className="modal-actions">
-              <button type="button" className="cancel" onClick={() => setLoginOpen(false)}>Cancel</button>
-              <button type="button" className="connect" onClick={connectSession} disabled={!loginName}>Open secure login</button>
+              <button type="button" className="cancel" onClick={() => setLoginOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" onClick={connectSession} disabled={!loginName.trim()}>
+                Open secure login
+              </button>
             </div>
           </div>
         </div>
       )}
 
       <footer>
-        <a className="brand footer-brand" href="#"><span className="brand-mark"><InstagramIcon /></span>keepsake</a>
+        <a className="brand" href="#"><span className="brand-mark"><InstagramIcon /></span>keepsake</a>
         <p>For personal use and content you have permission to save.</p>
-        <span>{downloadRoot ? `Saving to ${downloadRoot}` : "Local-first by design"}</span>
+        <span>Runs privately on your computer</span>
       </footer>
     </main>
+  );
+}
+
+function MediaGrid({
+  stories,
+  loading,
+  emptyText,
+}: {
+  stories: Story[];
+  loading: boolean;
+  emptyText: string;
+}) {
+  if (loading) {
+    return <div className="loading-state"><span /> Loading Instagram media…</div>;
+  }
+  if (!stories.length) {
+    return <div className="empty-state">{emptyText}</div>;
+  }
+  return (
+    <div className="story-grid">
+      {stories.map((story) => (
+        <article className="story-card" key={story.id}>
+          <div className="story-media">
+            {story.type === "video" ? (
+              <video src={story.preview_url} controls preload="metadata" />
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={story.preview_url} alt={`Instagram story ${story.position}`} />
+            )}
+            <span>{story.position}</span>
+          </div>
+          <div>
+            <small>{story.type}</small>
+            <a href={story.download_url} download={story.filename}>Download ↓</a>
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
