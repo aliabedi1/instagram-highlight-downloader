@@ -223,16 +223,23 @@ export default function Home() {
     }
   }
 
-  async function connectSession() {
+  async function connectSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const username = loginName.trim();
+    const code = verificationCode.trim();
+
+    if (loginLoading || !username || !loginPassword) return;
+    if (needsTwoFactor && !/^(?:\d{6}|\d{8})$/.test(code)) return;
+
     setLoginLoading(true);
     setMessage("");
     try {
       const data = await api<{ session_token: string; username: string }>("/session/login", {
         method: "POST",
         body: JSON.stringify({
-          username: loginName,
+          username,
           password: loginPassword,
-          verification_code: verificationCode,
+          verification_code: code,
         }),
       });
       window.sessionStorage.setItem(SESSION_KEY, data.session_token);
@@ -589,7 +596,7 @@ export default function Home() {
 
       {loginOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={closeLogin}>
-          <div className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title" onMouseDown={(event) => event.stopPropagation()}>
+          <form className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title" onSubmit={connectSession} onMouseDown={(event) => event.stopPropagation()}>
             <span className="modal-kicker">LOCAL SESSION</span>
             <h2 id="login-title">Connect Instagram</h2>
             <p>Your credentials are sent only to the local backend to create an Instagram session. The password is discarded after login; session data remains in memory until you disconnect, close this tab, or it becomes inactive.</p>
@@ -598,11 +605,13 @@ export default function Home() {
               <span>@</span>
               <input
                 id="login-username"
+                name="username"
                 value={loginName}
                 onChange={(event) => setLoginName(event.target.value.replace(/^@/, ""))}
                 placeholder="your_account"
                 autoFocus
                 autoComplete="username"
+                required
               />
             </div>
             <label htmlFor="login-password">Instagram password</label>
@@ -610,11 +619,13 @@ export default function Home() {
               <span>⌁</span>
               <input
                 id="login-password"
+                name="password"
                 type="password"
                 value={loginPassword}
                 onChange={(event) => setLoginPassword(event.target.value)}
                 placeholder="Your password"
                 autoComplete="current-password"
+                required
               />
             </div>
             {needsTwoFactor && (
@@ -624,11 +635,15 @@ export default function Home() {
                   <span>#</span>
                   <input
                     id="verification-code"
+                    name="verification-code"
                     inputMode="numeric"
                     value={verificationCode}
                     onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))}
                     placeholder="6-digit code or 8-digit backup code"
                     autoComplete="one-time-code"
+                    pattern="[0-9]{6}|[0-9]{8}"
+                    autoFocus
+                    required
                   />
                 </div>
               </>
@@ -636,15 +651,14 @@ export default function Home() {
             <div className="modal-actions">
               <button type="button" className="cancel" onClick={closeLogin}>Cancel</button>
               <button
-                type="button"
+                type="submit"
                 className="connect"
-                onClick={connectSession}
-                disabled={!loginName || !loginPassword || loginLoading || (needsTwoFactor && !verificationCode)}
+                disabled={!loginName.trim() || !loginPassword || loginLoading || (needsTwoFactor && !/^(?:\d{6}|\d{8})$/.test(verificationCode))}
               >
                 {loginLoading ? "Connecting…" : "Connect"}
               </button>
             </div>
-          </div>
+          </form>
         </div>
       )}
 
