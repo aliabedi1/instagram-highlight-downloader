@@ -180,9 +180,6 @@ export default function Home() {
       });
       setScan(data);
       setStatus("idle");
-      if (data.highlights[0]) {
-        await loadStories(data.highlights[0], data.profile.username);
-      }
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "Could not load highlights.");
@@ -385,29 +382,37 @@ export default function Home() {
           </div>
 
           {scan.highlights.length ? (
-            <div className="highlight-strip">
-              {visibleHighlights.map((highlight) => (
-                <button
-                  type="button"
-                  className={`highlight-card ${activeHighlight?.id === highlight.id ? "selected" : ""}`}
-                  key={highlight.id}
-                  onClick={() => loadStories(highlight)}
-                  aria-pressed={activeHighlight?.id === highlight.id}
-                >
-                  <span className="highlight-ring">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={highlight.cover_url}
-                      alt=""
-                      referrerPolicy="no-referrer"
-                    />
-                    <i>{activeHighlight?.id === highlight.id ? "●" : ""}</i>
-                  </span>
-                  <strong>{highlight.title}</strong>
-                  <small>{highlight.item_count} stories</small>
-                </button>
-              ))}
-            </div>
+            <>
+              {!activeHighlight && (
+                <p className="highlight-tip">
+                  <span aria-hidden="true">↓</span>
+                  <strong>Choose a highlight</strong> to preview its stories
+                </p>
+              )}
+              <div className="highlight-strip">
+                {visibleHighlights.map((highlight) => (
+                  <button
+                    type="button"
+                    className={`highlight-card ${activeHighlight?.id === highlight.id ? "selected" : ""}`}
+                    key={highlight.id}
+                    onClick={() => loadStories(highlight)}
+                    aria-pressed={activeHighlight?.id === highlight.id}
+                  >
+                    <span className="highlight-ring">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={highlight.cover_url}
+                        alt=""
+                        referrerPolicy="no-referrer"
+                      />
+                      <i>{activeHighlight?.id === highlight.id ? "●" : ""}</i>
+                    </span>
+                    <strong>{highlight.title}</strong>
+                    <small>{highlight.item_count} stories</small>
+                  </button>
+                ))}
+              </div>
+            </>
           ) : (
             <div className="empty-highlights">This profile has no visible highlights.</div>
           )}

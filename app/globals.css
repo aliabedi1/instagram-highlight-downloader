@@ -459,6 +459,30 @@ h1 em { color: var(--peach); font-weight: 500; }
   font-weight: 800;
 }
 
+.highlight-tip {
+  width: fit-content;
+  margin: 30px auto 0;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #675a69;
+  background: #fffdfb;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.highlight-tip span {
+  color: var(--peach);
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.highlight-tip strong { color: var(--plum); }
+
+.highlight-tip + .highlight-strip { margin-top: 16px; }
+
 .highlight-strip {
   display: grid;
   grid-auto-flow: column;
