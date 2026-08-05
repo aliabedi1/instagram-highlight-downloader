@@ -385,11 +385,11 @@ def hydrate_highlight(session: BrowserSession, highlight: dict[str, Any]) -> Non
         raise explain_instagram_error(exc) from exc
 
 
-def register_media(session: BrowserSession, story: dict[str, Any]) -> str:
+def register_media(session: BrowserSession, media_url: str, filename: str) -> str:
     token = uuid.uuid4().hex
     session.media[token] = {
-        "url": story["media_url"],
-        "filename": story["filename"],
+        "url": media_url,
+        "filename": filename,
     }
     if len(session.media) > 2000:
         for stale_token in list(session.media)[:500]:
@@ -508,6 +508,16 @@ def scan_highlights(
         raise explain_instagram_error(exc, target) from exc
 
     scan = normalize_scan(profile, highlights)
+    profile_pic_url = scan["profile"]["profile_pic_url"]
+    if profile_pic_url:
+        profile_pic_token = register_media(
+            session,
+            profile_pic_url,
+            f"{scan['profile']['username']}-profile.jpg",
+        )
+        scan["profile"]["profile_pic_url"] = (
+            f"http://127.0.0.1:8787/api/media/{profile_pic_token}"
+        )
     session.scans[target] = scan
     return public_scan_payload(scan)
 
@@ -533,7 +543,7 @@ def scan_highlight_stories(
     hydrate_highlight(session, highlight)
     stories = []
     for story in highlight["stories"]:
-        token = register_media(session, story)
+        token = register_media(session, story["media_url"], story["filename"])
         stories.append(
             {
                 key: value
