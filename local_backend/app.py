@@ -404,7 +404,7 @@ def find_highlights_connection(value: Any) -> dict[str, Any] | None:
 
 def graphql_highlights_page(
     client: Client, user_id: str, after: str | None = None
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     variables: dict[str, Any] = {
         "user_id": user_id,
         "first": 50,
@@ -419,10 +419,7 @@ def graphql_highlights_page(
         variables["after"] = after
     client.inject_sessionid_to_public()
     data = client.public_graphql_request(variables, query_id=HIGHLIGHTS_QUERY_ID)
-    connection = find_highlights_connection(data)
-    if not connection:
-        raise ValueError("Instagram did not return a highlight connection.")
-    return connection
+    return find_highlights_connection(data)
 
 
 def all_user_highlights(client: Client, user_id: str) -> list[Any]:
@@ -459,6 +456,8 @@ def all_user_highlights(client: Client, user_id: str) -> list[Any]:
     after: str | None = None
     while True:
         connection = graphql_highlights_page(client, user_id, after)
+        if not connection:
+            break
         edges = connection.get("edges") or connection.get("nodes") or []
         nodes = [
             edge.get("node", edge) if isinstance(edge, dict) else edge
