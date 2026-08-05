@@ -783,9 +783,7 @@ def prepare_archive(
         for item in scan["highlights"]
         if not selected or item["title"] in selected
     ]
-    for highlight in highlights:
-        hydrate_highlight(session, highlight)
-    if not highlights or not any(item["stories"] for item in highlights):
+    if not highlights:
         raise HTTPException(status_code=400, detail="There are no stories to download.")
 
     job_id = uuid.uuid4().hex
@@ -798,7 +796,42 @@ def prepare_archive(
         "titles": list(selected),
         "archive_name": archive_name,
         "created_at": time.time(),
+        "status": "preparing",
+        "completed_highlights": 0,
+        "total_highlights": len(highlights),
+        "current_highlight": "",
+        "downloaded_items": 0,
+        "error": "",
     }
+
+    def hydrate_archive() -> None:
+        archive = session.archives.get(job_id)
+        if not archive:
+            return
+        try:
+            for index, highlight in enumerate(highlights, start=1):
+                archive["current_highlight"] = highlight["title"]
+                hydrate_highlight(session, highlight)
+                archive["completed_highlights"] = index
+
+            downloaded_items = sum(len(item["stories"]) for item in highlights)
+            if not downloaded_items:
+                raise HTTPException(
+                    status_code=400,
+                    detail="There are no stories to download.",
+                )
+            archive["downloaded_items"] = downloaded_items
+            archive["current_highlight"] = ""
+            archive["completed_at"] = time.time()
+            archive["status"] = "complete"
+        except HTTPException as exc:
+            archive["error"] = str(exc.detail)
+            archive["status"] = "error"
+        except Exception as exc:
+            archive["error"] = explain_instagram_error(exc).detail
+            archive["status"] = "error"
+
+    threading.Thread(target=hydrate_archive, daemon=True).start()
     return {"job_id": job_id}
 
 
@@ -818,17 +851,20 @@ def get_job(
     highlights = [
         item for item in scan["highlights"] if not selected or item["title"] in selected
     ]
-    total_items = sum(len(item["stories"]) for item in highlights)
+    total_items = sum(item["item_count"] for item in highlights)
     return {
         "id": job_id,
-        "status": "complete",
+        "status": archive["status"],
         "username": scan["profile"]["username"],
-        "downloaded_items": total_items,
+        "downloaded_items": archive["downloaded_items"],
         "skipped_items": 0,
         "total_items": total_items,
-        "current_highlight": "",
-        "current_story": total_items,
+        "current_highlight": archive["current_highlight"],
+        "current_story": archive["downloaded_items"],
         "current_story_total": total_items,
+        "completed_highlights": archive["completed_highlights"],
+        "total_highlights": archive["total_highlights"],
+        "error": archive["error"],
         "archive_name": archive["archive_name"],
     }
 
@@ -847,7 +883,9 @@ def download_archive(job_id: str) -> StreamingResponse:
                 break
     if not session or not archive:
         raise HTTPException(status_code=404, detail="This download link expired.")
-    if time.time() - archive["created_at"] > ARCHIVE_TTL_SECONDS:
+    if archive["status"] != "complete":
+        raise HTTPException(status_code=409, detail="This download is not ready yet.")
+    if time.time() - archive.get("completed_at", archive["created_at"]) > ARCHIVE_TTL_SECONDS:
         session.archives.pop(job_id, None)
         raise HTTPException(status_code=404, detail="This download link expired.")
 

@@ -44,6 +44,14 @@ type StoryResult = {
   stories: Story[];
 };
 
+type DownloadJob = {
+  status: "preparing" | "complete" | "error";
+  completed_highlights: number;
+  total_highlights: number;
+  current_highlight: string;
+  error: string;
+};
+
 class ApiError extends Error {
   status: number;
 
@@ -109,6 +117,7 @@ export default function Home() {
   const [stories, setStories] = useState<Story[]>([]);
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [downloadTarget, setDownloadTarget] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState("");
   const [downloadError, setDownloadError] = useState<{ target: string; message: string } | null>(null);
   const [status, setStatus] = useState<"idle" | "scanning" | "error">("idle");
   const [message, setMessage] = useState("");
@@ -316,6 +325,7 @@ export default function Home() {
       : "all";
 
     setDownloadTarget(requestedTarget);
+    setDownloadProgress("Preparing download…");
     setDownloadError(null);
     setMessage("");
     try {
@@ -326,6 +336,22 @@ export default function Home() {
           highlight_titles: highlightTitles,
         }),
       });
+      let job: DownloadJob;
+      do {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+        job = await api<DownloadJob>(`/jobs/${data.job_id}`);
+        if (job.status === "error") {
+          throw new Error(job.error || "Download could not be prepared.");
+        }
+        if (job.status === "preparing") {
+          setDownloadProgress(
+            job.total_highlights > 1
+              ? `Preparing ${job.completed_highlights} of ${job.total_highlights} highlights…`
+              : "Preparing highlight…",
+          );
+        }
+      } while (job.status !== "complete");
+
       const downloadLink = document.createElement("a");
       downloadLink.href = `${API}/jobs/${data.job_id}/archive`;
       downloadLink.download = "";
@@ -340,6 +366,7 @@ export default function Home() {
       });
     } finally {
       setDownloadTarget(null);
+      setDownloadProgress("");
     }
   }
 
@@ -438,7 +465,7 @@ export default function Home() {
                 aria-busy={downloadTarget === "all"}
               >
                 {downloadTarget === "all" ? (
-                  <><span className="button-spinner" /> Preparing download…</>
+                  <><span className="button-spinner" /> {downloadProgress}</>
                 ) : (
                   <>Download all highlights <span aria-hidden="true">⇩</span></>
                 )}
@@ -549,7 +576,7 @@ export default function Home() {
                     aria-busy={downloadTarget === `highlight:${activeHighlight.title}`}
                   >
                     {downloadTarget === `highlight:${activeHighlight.title}` ? (
-                      <><span className="button-spinner" /> Preparing download…</>
+                      <><span className="button-spinner" /> {downloadProgress}</>
                     ) : (
                       <>Download highlight <span>⇩</span></>
                     )}
