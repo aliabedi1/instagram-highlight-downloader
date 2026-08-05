@@ -508,6 +508,50 @@ h1 em { color: var(--peach); font-weight: 500; }
   font-size: 9px;
 }
 
+.highlight-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: -8px 0 32px;
+}
+
+.highlight-pagination button {
+  min-width: 38px;
+  height: 38px;
+  padding: 0 12px;
+  color: var(--plum);
+  background: #fffdfb;
+  border: 1px solid #d9ced7;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.highlight-pagination button:hover:not(:disabled),
+.highlight-pagination button.active {
+  color: white;
+  background: var(--plum);
+  border-color: var(--plum);
+}
+
+.highlight-pagination button:disabled {
+  cursor: not-allowed;
+  opacity: .4;
+}
+
+.highlight-pages {
+  display: flex;
+  gap: 6px;
+}
+
+.highlight-pagination > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .empty-highlights {
   margin: 35px 0;
   padding: 40px;
@@ -1145,6 +1189,8 @@ footer b { color: var(--peach); }
   .highlight-strip { grid-auto-columns: 110px; }
   .highlight-card { width: 110px; }
   .highlight-ring { width: 88px; height: 88px; }
+  .highlight-pagination { flex-wrap: wrap; }
+  .highlight-pagination > span { order: -1; width: 100%; text-align: center; }
   .folder-preview, .job-top { align-items: stretch; flex-direction: column; }
   .story-browser { padding: 20px 14px; }
   .story-browser-head { align-items: flex-start; flex-direction: column; }

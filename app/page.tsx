@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 
 const API = "http://127.0.0.1:8787/api";
 const SESSION_KEY = "keepsake-browser-session";
+const HIGHLIGHTS_PER_PAGE = 20;
 
 type Highlight = {
   id: string;
@@ -21,6 +22,8 @@ type ScanResult = {
     is_private: boolean;
   };
   highlights: Highlight[];
+  total_highlights: number;
+  total_stories: number;
 };
 
 type Story = {
@@ -125,6 +128,16 @@ export default function Home() {
   const [verificationCode, setVerificationCode] = useState("");
   const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
+  const [highlightPage, setHighlightPage] = useState(1);
+
+  const totalHighlightPages = scan
+    ? Math.ceil(scan.total_highlights / HIGHLIGHTS_PER_PAGE)
+    : 0;
+  const firstVisibleHighlight = (highlightPage - 1) * HIGHLIGHTS_PER_PAGE;
+  const visibleHighlights = scan?.highlights.slice(
+    firstVisibleHighlight,
+    firstVisibleHighlight + HIGHLIGHTS_PER_PAGE,
+  ) ?? [];
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -155,6 +168,9 @@ export default function Home() {
     setMessage("");
     setScan(null);
     setJob(null);
+    setHighlightPage(1);
+    setActiveHighlight(null);
+    setStories([]);
     try {
       const data = await api<ScanResult>("/highlights/scan", {
         method: "POST",
@@ -185,6 +201,19 @@ export default function Home() {
           target_username: profileUsername || scan?.profile.username || target,
           highlight_id: highlight.id,
         }),
+      });
+      setActiveHighlight(data.highlight);
+      setScan((current) => {
+        if (!current) return current;
+        const previous = current.highlights.find((item) => item.id === data.highlight.id);
+        if (!previous) return current;
+        return {
+          ...current,
+          total_stories: current.total_stories - previous.item_count + data.highlight.item_count,
+          highlights: current.highlights.map((item) => (
+            item.id === data.highlight.id ? data.highlight : item
+          )),
+        };
       });
       setStories(data.stories);
     } catch (error) {
@@ -223,6 +252,12 @@ export default function Home() {
     } finally {
       setLoginLoading(false);
     }
+  }
+
+  function changeHighlightPage(page: number) {
+    setHighlightPage(page);
+    setActiveHighlight(null);
+    setStories([]);
   }
 
   function closeLogin() {
@@ -344,14 +379,14 @@ export default function Home() {
             <div>
               <span className="result-owner">@{scan.profile.username}</span>
               <h2>{scan.profile.full_name || scan.profile.username}</h2>
-              <p>{scan.highlights.length} highlights · {scan.highlights.reduce((sum, item) => sum + item.item_count, 0)} stories</p>
+              <p>{scan.total_highlights} highlights · {scan.total_stories} stories</p>
             </div>
             <span className="profile-ready">Ready to browse</span>
           </div>
 
           {scan.highlights.length ? (
             <div className="highlight-strip">
-              {scan.highlights.map((highlight) => (
+              {visibleHighlights.map((highlight) => (
                 <button
                   type="button"
                   className={`highlight-card ${activeHighlight?.id === highlight.id ? "selected" : ""}`}
@@ -375,6 +410,42 @@ export default function Home() {
             </div>
           ) : (
             <div className="empty-highlights">This profile has no visible highlights.</div>
+          )}
+
+          {totalHighlightPages > 1 && (
+            <nav className="highlight-pagination" aria-label="Highlight pages">
+              <button
+                type="button"
+                onClick={() => changeHighlightPage(highlightPage - 1)}
+                disabled={highlightPage === 1}
+              >
+                Previous
+              </button>
+              <div className="highlight-pages">
+                {Array.from({ length: totalHighlightPages }, (_, index) => index + 1).map((page) => (
+                  <button
+                    type="button"
+                    className={page === highlightPage ? "active" : ""}
+                    key={page}
+                    onClick={() => changeHighlightPage(page)}
+                    aria-label={`Page ${page}`}
+                    aria-current={page === highlightPage ? "page" : undefined}
+                  >
+                    {page}
+                  </button>
+                ))}
+              </div>
+              <span>
+                {firstVisibleHighlight + 1}–{Math.min(firstVisibleHighlight + HIGHLIGHTS_PER_PAGE, scan.total_highlights)} of {scan.total_highlights}
+              </span>
+              <button
+                type="button"
+                onClick={() => changeHighlightPage(highlightPage + 1)}
+                disabled={highlightPage === totalHighlightPages}
+              >
+                Next
+              </button>
+            </nav>
           )}
 
           {activeHighlight && (
@@ -442,7 +513,7 @@ export default function Home() {
               <div>
                 <strong>{scan.profile.username}/</strong>
                 <p>
-                  {scan.highlights.length} highlight folders · 1, 2, 3, …
+                  {scan.total_highlights} highlight folders · 1, 2, 3, …
                 </p>
               </div>
             </div>

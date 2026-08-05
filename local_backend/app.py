@@ -34,6 +34,7 @@ from pydantic import BaseModel, SecretStr
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 SESSION_TTL_SECONDS = 10 * 60
 ARCHIVE_TTL_SECONDS = 30 * 60
+MAX_HIGHLIGHTS_PER_SCAN = 100
 
 
 app = FastAPI(title="Keepsake Local API", version="3.0")
@@ -321,6 +322,10 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
 def public_scan_payload(scan: dict[str, Any]) -> dict[str, Any]:
     return {
         "profile": dict(scan["profile"]),
+        "total_highlights": len(scan["highlights"]),
+        "total_stories": sum(
+            highlight["item_count"] for highlight in scan["highlights"]
+        ),
         "highlights": [
             {
                 key: value
@@ -503,7 +508,9 @@ def scan_highlights(
     try:
         with session.request_lock:
             profile = session.client.user_info_by_username_v1(target)
-            highlights = session.client.user_highlights(str(profile.pk))
+            highlights = session.client.user_highlights(str(profile.pk))[
+                :MAX_HIGHLIGHTS_PER_SCAN
+            ]
     except Exception as exc:
         raise explain_instagram_error(exc, target) from exc
 
