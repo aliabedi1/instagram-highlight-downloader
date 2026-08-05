@@ -1,0 +1,365 @@
+:root {
+  color-scheme: light dark;
+  --ink: light-dark(#201b28, #f5eef3);
+  --muted: light-dark(#746d7b, #b9afb8);
+  --paper: light-dark(#fbfaf7, #171318);
+  --peach: light-dark(#ff6f50, #ff8a70);
+  --plum: light-dark(#5d2d63, #d19bd0);
+  --line: light-dark(#e7e0dc, #3c323b);
+  --lavender: light-dark(#eee7f0, #302730);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--paper);
+}
+
+::selection {
+  color: light-dark(#fff, #211720);
+  background: light-dark(#5d2d63, #ffb3a2);
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.theme-selector {
+  height: 38px;
+  padding: 3px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: light-dark(#f1ece9, #211b21);
+  border: 1px solid light-dark(#e4dbd7, #403640);
+  border-radius: 12px;
+}
+
+.theme-selector button {
+  height: 30px;
+  padding: 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 750;
+  transition: color .18s ease-out, background .18s ease-out, box-shadow .18s ease-out;
+}
+
+.theme-selector button:hover {
+  color: var(--ink);
+}
+
+.theme-selector button:focus-visible {
+  outline: 2px solid var(--peach);
+  outline-offset: 2px;
+}
+
+.theme-selector button.active {
+  color: light-dark(#4d2852, #fff5fc);
+  background: light-dark(#fff, #653568);
+  box-shadow: 0 3px 9px light-dark(#3d27340f, #08060866);
+}
+
+.theme-selector svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.brand-mark {
+  background: linear-gradient(145deg, var(--peach), #d3507c 58%, light-dark(#5d2d63, #744078));
+  box-shadow: 0 7px 20px #d3507c33;
+}
+
+.local-badge {
+  color: light-dark(#526e59, #b8dcc1);
+  background: light-dark(#edf5ec, #203329);
+}
+
+.hero::before {
+  background: radial-gradient(circle, light-dark(#f5dad2, #6f3936) 0%, #6f393600 70%);
+  opacity: light-dark(1, .65);
+}
+
+.hero::after {
+  background: radial-gradient(circle, light-dark(#e8d7eb, #58345d) 0%, #58345d00 70%);
+  opacity: light-dark(1, .7);
+}
+
+.eyebrow {
+  color: light-dark(#965c57, #e8a296);
+}
+
+.username-form,
+.input-shell {
+  background: light-dark(#fff, #211b21);
+  border-color: light-dark(#ded6d2, #443943);
+  box-shadow: 0 20px 52px light-dark(#4c304612, #0806095c);
+}
+
+.username-form label,
+.login-modal label,
+.download-form label {
+  color: light-dark(#6c626e, #c8bdc6);
+}
+
+.username-input,
+.session-row select,
+.connected-account,
+.login-inline {
+  background: light-dark(#f7f4f2, #292229);
+}
+
+.username-input:focus-within {
+  background: light-dark(#fff, #302730);
+  border-color: light-dark(#b990aa, #b77ab4);
+}
+
+.username-input input::placeholder,
+.input-shell input::placeholder {
+  color: light-dark(#aaa1aa, #8e838c);
+}
+
+.connected-account span {
+  color: light-dark(#3c9c72, #70c792);
+}
+
+.refresh-button,
+.info-card,
+.loading-card {
+  background: light-dark(#f0e9f1, #332933);
+}
+
+.scan-button,
+.info-card > span,
+.highlight-pagination button:hover:not(:disabled),
+.highlight-pagination button.active,
+.story-browser-actions button,
+.profile-download-control > button,
+.modal-actions .connect,
+.input-shell button,
+.download-all,
+.how {
+  color: #fff8fc;
+  background: light-dark(#5d2d63, #653568);
+  border-color: light-dark(#5d2d63, #653568);
+}
+
+.input-shell button:hover:not(:disabled) {
+  background: light-dark(#71376f, #76417a);
+}
+
+.connect-line {
+  color: light-dark(#918992, #a99da7);
+}
+
+.connect-line button {
+  border-bottom-color: light-dark(#a98aa7, #9a6c99);
+}
+
+.library,
+.results {
+  background: light-dark(#f0e9ee, #211a21);
+  box-shadow: 0 28px 70px light-dark(#4929420d, #08060870);
+}
+
+.profile-photo {
+  background: light-dark(#fff, #292229);
+  border-color: light-dark(#dba09a, #c27c72);
+}
+
+.select-all {
+  border-color: light-dark(#cdbfca, #665363);
+}
+
+.highlight-strip {
+  scrollbar-color: light-dark(#bfaabd, #765a73) transparent;
+}
+
+.highlight-ring {
+  background: light-dark(#d4c7d0, #4a3d48);
+}
+
+.highlight-card.selected .highlight-ring {
+  background: light-dark(#fff, #332932);
+}
+
+.highlight-ring i {
+  border-color: light-dark(#f0e9ee, #211a21);
+}
+
+.highlight-pagination button {
+  color: light-dark(#5d2d63, #e4b8e1);
+  background: light-dark(#fffdfb, #292229);
+  border-color: light-dark(#d9ced7, #554553);
+}
+
+.empty-highlights {
+  background: light-dark(#ffffff88, #2a222ab8);
+}
+
+.story-browser {
+  background: light-dark(#fffdfb, #292229);
+  border-color: light-dark(#e8dfdd, #443843);
+}
+
+.order-note {
+  color: light-dark(#8a627d, #dfb1d8);
+  background: light-dark(#f1e9f0, #3a2c39);
+}
+
+.story-card,
+.media-card,
+.folder-preview {
+  background: light-dark(#fff, #292229);
+  border-color: light-dark(#e7dedb, #443943);
+  box-shadow: 0 12px 34px light-dark(#3e263309, #08060866);
+}
+
+.story-media,
+.media-frame {
+  background: light-dark(#e4dce1, #3c323b);
+}
+
+.story-type,
+.type-pill {
+  background: light-dark(#211b24aa, #120f13c7);
+}
+
+.folder-icon {
+  color: light-dark(#9d615e, #efaa9d);
+  background: light-dark(#fce6df, #402925);
+}
+
+.structure-section {
+  background: light-dark(#f4eee9, #201a20);
+}
+
+.structure-section pre {
+  color: light-dark(#e9dce6, #f0e3ed);
+  background: light-dark(#2a202b, #100d11);
+  box-shadow: 0 20px 46px light-dark(#2a202b1c, #08060880);
+}
+
+.modal-backdrop {
+  background: light-dark(#211924aa, #0b090ccc);
+}
+
+.login-modal {
+  background: light-dark(#fbfaf7, #201a20);
+  border: 1px solid light-dark(transparent, #40353f);
+  box-shadow: 0 32px 96px light-dark(#160e1a55, #050405b8);
+}
+
+.modal-actions .cancel {
+  border-color: light-dark(#e7e0dc, #51434f);
+}
+
+.input-shell:focus-within {
+  border-color: light-dark(#b990aa, #a66fa4);
+  box-shadow: 0 20px 52px light-dark(#5d2d6318, #08060970), 0 0 0 4px light-dark(#5d2d630b, #d19bd018);
+}
+
+.input-icon {
+  color: light-dark(#9d788f, #c39abb);
+}
+
+.meta-divider {
+  background: light-dark(#c5bdc3, #665b64);
+}
+
+.error-card {
+  color: light-dark(#743b37, #ffd4ce);
+  background: light-dark(#ffebe6, #492724);
+}
+
+.error-card > span {
+  background: light-dark(#c95a4e, #b9574d);
+}
+
+.story-browser-actions .download-error,
+.download-error {
+  color: light-dark(#a33f37, #f1a49b);
+}
+
+.loader {
+  border-color: light-dark(#aa8ca722, #d19bd02b);
+  border-top-color: var(--plum);
+}
+
+.section-number {
+  color: light-dark(#d9b8d3, #e0b8dc);
+}
+
+.steps p {
+  color: light-dark(#d5c3d4, #d7c7d4);
+}
+
+footer {
+  border-top-color: var(--line);
+}
+
+@media (max-width: 760px) {
+  .nav-actions {
+    gap: 8px;
+  }
+
+  .theme-selector {
+    height: 48px;
+    padding: 2px;
+  }
+
+  .theme-selector button {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .theme-selector button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .nav-actions {
+    gap: 6px;
+  }
+
+  .local-badge {
+    display: none;
+  }
+}
+
+@media (max-width: 350px) {
+  .brand {
+    font-size: 0;
+  }
+}

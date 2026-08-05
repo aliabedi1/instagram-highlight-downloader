@@ -1,8 +1,10 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
+import ThemeSelector from "./theme-selector";
 
 const API = "http://127.0.0.1:8787/api";
+const SESSION_KEY = "keepsake-browser-session";
 
 type Highlight = {
   id: string;
@@ -20,7 +22,11 @@ type ScanResult = {
     is_private: boolean;
   };
   highlights: Highlight[];
-  download_path: string;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  total_highlights: number;
+  total_stories: number;
 };
 
 type Story = {
@@ -28,6 +34,7 @@ type Story = {
   position: number;
   type: "image" | "video";
   filename: string;
+  source_url: string;
   preview_url: string;
   download_url: string;
 };
@@ -37,20 +44,22 @@ type StoryResult = {
   stories: Story[];
 };
 
-type Job = {
-  id: string;
-  status: "queued" | "downloading" | "complete" | "error";
-  username: string;
-  downloaded_items: number;
-  skipped_items: number;
-  total_items: number;
+type DownloadJob = {
+  status: "preparing" | "complete" | "error";
+  completed_highlights: number;
+  total_highlights: number;
   current_highlight: string;
-  current_story: number;
-  current_story_total: number;
-  output_path?: string;
-  archive_name?: string;
-  error?: string;
+  error: string;
 };
+
+class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 function InstagramIcon() {
   return (
@@ -72,20 +81,26 @@ function FolderIcon() {
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 30000);
+  const timeout = window.setTimeout(() => controller.abort(), 90000);
   try {
+    const sessionToken = window.sessionStorage.getItem(SESSION_KEY);
+    const headers = new Headers(options?.headers);
+    if (options?.body) headers.set("Content-Type", "application/json");
+    if (sessionToken) headers.set("X-Keepsake-Session", sessionToken);
     const response = await fetch(`${API}${path}`, {
       ...options,
       signal: options?.signal || controller.signal,
-      headers: options?.body ? { "Content-Type": "application/json" } : undefined,
+      headers,
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Something went wrong.");
+    if (!response.ok) {
+      throw new ApiError(data.detail || "Something went wrong.", response.status);
+    }
     return data;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(
-        "Instagram did not respond within 30 seconds. The scan was stopped; wait a few minutes before trying again.",
+        "Instagram did not respond within 90 seconds. The request was stopped; wait before trying again.",
       );
     }
     throw error;
@@ -97,24 +112,44 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 export default function Home() {
   const [target, setTarget] = useState("");
   const [viewer, setViewer] = useState("");
-  const [sessions, setSessions] = useState<string[]>([]);
-  const [downloadRoot, setDownloadRoot] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [activeHighlight, setActiveHighlight] = useState<Highlight | null>(null);
   const [stories, setStories] = useState<Story[]>([]);
   const [storiesLoading, setStoriesLoading] = useState(false);
-  const [job, setJob] = useState<Job | null>(null);
+  const [downloadTarget, setDownloadTarget] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState("");
+  const [downloadError, setDownloadError] = useState<{ target: string; message: string } | null>(null);
   const [status, setStatus] = useState<"idle" | "scanning" | "error">("idle");
   const [message, setMessage] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [highlightPage, setHighlightPage] = useState(1);
+  const [highlightPageLoading, setHighlightPageLoading] = useState(false);
+
+  const totalHighlightPages = scan?.total_pages ?? 0;
+  const firstVisibleHighlight = scan
+    ? (scan.page - 1) * scan.page_size
+    : 0;
+  const visibleHighlights = scan?.highlights ?? [];
+  const visiblePageNumbers = totalHighlightPages <= 7
+    ? Array.from({ length: totalHighlightPages }, (_, index) => index + 1)
+    : Array.from(new Set([
+        1,
+        Math.max(2, highlightPage - 1),
+        highlightPage,
+        Math.min(totalHighlightPages - 1, highlightPage + 1),
+        totalHighlightPages,
+      ])).sort((first, second) => first - second);
 
   const refreshStatus = useCallback(async () => {
     try {
-      const data = await api<{ sessions: string[]; download_root: string }>("/status");
-      setSessions(data.sessions);
-      setDownloadRoot(data.download_root);
-      setViewer((current) => current || data.sessions[0] || "");
+      const data = await api<{ connected: boolean; username: string | null }>("/status");
+      setViewer(data.connected ? data.username || "" : "");
+      if (!data.connected) window.sessionStorage.removeItem(SESSION_KEY);
       setMessage("");
     } catch {
       setMessage("The local download service is not running. Start the app with start-local.ps1.");
@@ -122,48 +157,37 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    refreshStatus();
+    const timer = window.setTimeout(refreshStatus, 0);
+    return () => window.clearTimeout(timer);
   }, [refreshStatus]);
 
   useEffect(() => {
-    if (!job || !["queued", "downloading"].includes(job.status)) return;
-    const timer = window.setInterval(async () => {
-      try {
-        const next = await api<Job>(`/jobs/${job.id}`);
-        setJob(next);
-      } catch (error) {
-        setJob((current) =>
-          current ? { ...current, status: "error", error: String(error) } : null,
-        );
-      }
-    }, 1200);
+    if (!viewer) return;
+    const heartbeat = () => api("/session/heartbeat", { method: "POST" }).catch(() => setViewer(""));
+    const timer = window.setInterval(heartbeat, 45_000);
     return () => window.clearInterval(timer);
-  }, [job]);
-
-  const progress = useMemo(() => {
-    if (!job?.total_items) return 0;
-    return Math.min(100, Math.round((job.downloaded_items / job.total_items) * 100));
-  }, [job]);
+  }, [viewer]);
 
   async function handleScan(event: FormEvent) {
     event.preventDefault();
     setStatus("scanning");
     setMessage("");
     setScan(null);
-    setJob(null);
+    setDownloadTarget(null);
+    setDownloadError(null);
+    setHighlightPage(1);
+    setActiveHighlight(null);
+    setStories([]);
     try {
       const data = await api<ScanResult>("/highlights/scan", {
         method: "POST",
         body: JSON.stringify({
           target_username: target,
-          session_username: viewer,
         }),
       });
       setScan(data);
+      setHighlightPage(data.page);
       setStatus("idle");
-      if (data.highlights[0]) {
-        await loadStories(data.highlights[0], data.profile.username);
-      }
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "Could not load highlights.");
@@ -180,9 +204,21 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({
           target_username: profileUsername || scan?.profile.username || target,
-          session_username: viewer,
           highlight_id: highlight.id,
         }),
+      });
+      setActiveHighlight(data.highlight);
+      setScan((current) => {
+        if (!current) return current;
+        const previous = current.highlights.find((item) => item.id === data.highlight.id);
+        if (!previous) return current;
+        return {
+          ...current,
+          total_stories: current.total_stories - previous.item_count + data.highlight.item_count,
+          highlights: current.highlights.map((item) => (
+            item.id === data.highlight.id ? data.highlight : item
+          )),
+        };
       });
       setStories(data.stories);
     } catch (error) {
@@ -194,52 +230,144 @@ export default function Home() {
     }
   }
 
-  async function connectSession() {
+  async function connectSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const username = loginName.trim();
+    const code = verificationCode.trim();
+
+    if (loginLoading || !username || !loginPassword) return;
+    if (needsTwoFactor && !/^(?:\d{6}|\d{8})$/.test(code)) return;
+
+    setLoginLoading(true);
+    setMessage("");
     try {
-      const data = await api<{ message: string }>("/session/login", {
+      const data = await api<{ session_token: string; username: string }>("/session/login", {
         method: "POST",
-        body: JSON.stringify({ username: loginName }),
+        body: JSON.stringify({
+          username,
+          password: loginPassword,
+          verification_code: code,
+        }),
       });
-      setMessage(data.message);
+      window.sessionStorage.setItem(SESSION_KEY, data.session_token);
+      setViewer(data.username);
+      setLoginPassword("");
+      setVerificationCode("");
+      setNeedsTwoFactor(false);
+      setMessage(`Connected as @${data.username}. Login data stays in memory only while this tab is active.`);
       setLoginOpen(false);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setNeedsTwoFactor(true);
+      }
       setMessage(error instanceof Error ? error.message : "Could not open login.");
+    } finally {
+      setLoginLoading(false);
     }
   }
 
-  async function startDownload() {
-    if (!scan) return;
+  async function changeHighlightPage(page: number) {
+    if (
+      !scan
+      || highlightPageLoading
+      || page === highlightPage
+      || page < 1
+      || page > totalHighlightPages
+    ) return;
+
+    setHighlightPageLoading(true);
+    setMessage("");
+    setActiveHighlight(null);
+    setStories([]);
+    try {
+      const data = await api<ScanResult>("/highlights/page", {
+        method: "POST",
+        body: JSON.stringify({
+          target_username: scan.profile.username,
+          page,
+        }),
+      });
+      setScan(data);
+      setHighlightPage(data.page);
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not load that highlight page.",
+      );
+    } finally {
+      setHighlightPageLoading(false);
+    }
+  }
+
+  function closeLogin() {
+    setLoginOpen(false);
+    setLoginPassword("");
+    setVerificationCode("");
+    setNeedsTwoFactor(false);
+  }
+
+  async function disconnectSession() {
+    try {
+      await api("/session", { method: "DELETE" });
+    } finally {
+      window.sessionStorage.removeItem(SESSION_KEY);
+      setViewer("");
+      setScan(null);
+      setDownloadTarget(null);
+      setDownloadError(null);
+      setMessage("Instagram session removed from memory.");
+    }
+  }
+
+  async function startDownload(highlightTitles: string[] | null = null) {
+    if (!scan || downloadTarget) return;
+    const requestedTarget = highlightTitles?.[0]
+      ? `highlight:${highlightTitles[0]}`
+      : "all";
+
+    setDownloadTarget(requestedTarget);
+    setDownloadProgress("Preparing download…");
+    setDownloadError(null);
     setMessage("");
     try {
       const data = await api<{ job_id: string }>("/highlights/download", {
         method: "POST",
         body: JSON.stringify({
           target_username: scan.profile.username,
-          session_username: viewer,
-          highlight_titles: null,
+          highlight_titles: highlightTitles,
         }),
       });
-      setJob({
-        id: data.job_id,
-        status: "queued",
-        username: scan.profile.username,
-        downloaded_items: 0,
-        skipped_items: 0,
-        total_items: scan.highlights.reduce(
-          (sum, highlight) => sum + highlight.item_count,
-          0,
-        ),
-        current_highlight: "",
-        current_story: 0,
-        current_story_total: 0,
-      });
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Download could not start.");
-    }
-  }
+      let job: DownloadJob;
+      do {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+        job = await api<DownloadJob>(`/jobs/${data.job_id}`);
+        if (job.status === "error") {
+          throw new Error(job.error || "Download could not be prepared.");
+        }
+        if (job.status === "preparing") {
+          setDownloadProgress(
+            job.total_highlights > 1
+              ? `Preparing ${job.completed_highlights} of ${job.total_highlights} highlights…`
+              : "Preparing highlight…",
+          );
+        }
+      } while (job.status !== "complete");
 
-  async function openDownloads() {
-    await api("/open-downloads", { method: "POST" });
+      const downloadLink = document.createElement("a");
+      downloadLink.href = `${API}/jobs/${data.job_id}/archive`;
+      downloadLink.download = "";
+      downloadLink.hidden = true;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      downloadLink.remove();
+    } catch (error) {
+      setDownloadError({
+        target: requestedTarget,
+        message: error instanceof Error ? error.message : "Download could not start.",
+      });
+    } finally {
+      setDownloadTarget(null);
+      setDownloadProgress("");
+    }
   }
 
   return (
@@ -249,7 +377,10 @@ export default function Home() {
           <span className="brand-mark"><InstagramIcon /></span>
           keepsake
         </a>
-        <span className="local-badge"><span /> Running locally</span>
+        <div className="nav-actions">
+          <ThemeSelector />
+          <span className="local-badge"><span /> {viewer ? `Connected @${viewer}` : "Login required"}</span>
+        </div>
       </nav>
 
       <section className="hero local-hero">
@@ -276,22 +407,17 @@ export default function Home() {
             </div>
           </div>
           <div className="session-field">
-            <label htmlFor="session">Connected as</label>
-            <div className="session-row">
-              <select
-                id="session"
-                value={viewer}
-                onChange={(event) => setViewer(event.target.value)}
-              >
-                <option value="">Choose a session</option>
-                {sessions.map((session) => (
-                  <option key={session} value={session}>@{session}</option>
-                ))}
-              </select>
-              <button type="button" className="refresh-button" onClick={refreshStatus}>
-                Refresh
+            <label>Instagram session</label>
+            {viewer ? (
+              <div className="connected-account">
+                <span>●</span>
+                <strong>@{viewer}</strong>
+              </div>
+            ) : (
+              <button type="button" className="login-inline" onClick={() => setLoginOpen(true)}>
+                Connect Instagram
               </button>
-            </div>
+            )}
           </div>
           <button className="scan-button" type="submit" disabled={!target || !viewer || status === "scanning"}>
             {status === "scanning" ? "Finding highlights…" : "Show highlights"}
@@ -300,8 +426,12 @@ export default function Home() {
         </form>
 
         <div className="connect-line">
-          <span>Instagram requires a viewer session, even for public highlights.</span>
-          <button type="button" onClick={() => setLoginOpen(true)}>Connect another account</button>
+          <span>Your Instagram login exists only in memory while this tab stays active.</span>
+          {viewer ? (
+            <button type="button" onClick={disconnectSession}>Disconnect</button>
+          ) : (
+            <button type="button" onClick={() => setLoginOpen(true)}>Connect account</button>
+          )}
         </div>
 
         {message && (
@@ -316,37 +446,117 @@ export default function Home() {
         <section className="library">
           <div className="profile-row">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={scan.profile.profile_pic_url} alt="" className="profile-photo" />
+            <img
+              src={scan.profile.profile_pic_url}
+              alt=""
+              className="profile-photo"
+              referrerPolicy="no-referrer"
+            />
             <div>
               <span className="result-owner">@{scan.profile.username}</span>
               <h2>{scan.profile.full_name || scan.profile.username}</h2>
-              <p>{scan.highlights.length} highlights · {scan.highlights.reduce((sum, item) => sum + item.item_count, 0)} stories</p>
+              <p>{scan.total_highlights} highlights · {scan.total_stories} stories</p>
             </div>
-            <span className="profile-ready">Ready to browse</span>
+            <div className="profile-download-control">
+              <button
+                type="button"
+                onClick={() => startDownload()}
+                disabled={!scan.total_highlights || downloadTarget !== null}
+                aria-busy={downloadTarget === "all"}
+              >
+                {downloadTarget === "all" ? (
+                  <><span className="button-spinner" /> {downloadProgress}</>
+                ) : (
+                  <>Download all highlights <span aria-hidden="true">⇩</span></>
+                )}
+              </button>
+              {downloadError?.target === "all" && (
+                <p className="download-error" role="alert">{downloadError.message}</p>
+              )}
+            </div>
           </div>
 
           {scan.highlights.length ? (
-            <div className="highlight-strip">
-              {scan.highlights.map((highlight) => (
-                <button
-                  type="button"
-                  className={`highlight-card ${activeHighlight?.id === highlight.id ? "selected" : ""}`}
-                  key={highlight.id}
-                  onClick={() => loadStories(highlight)}
-                  aria-pressed={activeHighlight?.id === highlight.id}
-                >
-                  <span className="highlight-ring">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={highlight.cover_url} alt="" />
-                    <i>{activeHighlight?.id === highlight.id ? "●" : ""}</i>
-                  </span>
-                  <strong>{highlight.title}</strong>
-                  <small>{highlight.item_count} stories</small>
-                </button>
-              ))}
-            </div>
+            <>
+              {!activeHighlight && (
+                <p className="highlight-tip">
+                  <span aria-hidden="true">↓</span>
+                  <strong>Choose a highlight</strong> to preview its stories
+                </p>
+              )}
+              <div className="highlight-strip" aria-busy={highlightPageLoading}>
+                {highlightPageLoading ? (
+                  <div className="highlight-page-loading" role="status">
+                    <span className="loader" />
+                    Loading highlight page…
+                  </div>
+                ) : visibleHighlights.map((highlight) => (
+                    <button
+                      type="button"
+                      className={`highlight-card ${activeHighlight?.id === highlight.id ? "selected" : ""}`}
+                      key={highlight.id}
+                      onClick={() => loadStories(highlight)}
+                      aria-pressed={activeHighlight?.id === highlight.id}
+                    >
+                      <span className="highlight-ring">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={highlight.cover_url}
+                          alt=""
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                        />
+                        <i>{activeHighlight?.id === highlight.id ? "●" : ""}</i>
+                      </span>
+                      <strong>{highlight.title}</strong>
+                      <small>{highlight.item_count} stories</small>
+                    </button>
+                  ))}
+              </div>
+            </>
           ) : (
             <div className="empty-highlights">This profile has no visible highlights.</div>
+          )}
+
+          {totalHighlightPages > 1 && (
+            <nav className="highlight-pagination" aria-label="Highlight pages">
+              <button
+                type="button"
+                onClick={() => changeHighlightPage(highlightPage - 1)}
+                disabled={highlightPageLoading || highlightPage === 1}
+              >
+                Previous
+              </button>
+              <div className="highlight-pages">
+                {visiblePageNumbers.map((page, index) => (
+                  <span className="highlight-page-control" key={page}>
+                    {index > 0 && page - visiblePageNumbers[index - 1] > 1 && (
+                      <span className="page-ellipsis" aria-hidden="true">…</span>
+                    )}
+                    <button
+                      type="button"
+                      className={page === highlightPage ? "active" : ""}
+                      onClick={() => changeHighlightPage(page)}
+                      disabled={highlightPageLoading}
+                      aria-label={`Page ${page}`}
+                      aria-current={page === highlightPage ? "page" : undefined}
+                    >
+                      {page}
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <span>
+                {firstVisibleHighlight + 1}–{Math.min(firstVisibleHighlight + scan.page_size, scan.total_highlights)} of {scan.total_highlights}
+              </span>
+              <button
+                type="button"
+                onClick={() => changeHighlightPage(highlightPage + 1)}
+                disabled={highlightPageLoading || highlightPage === totalHighlightPages}
+              >
+                Next
+              </button>
+            </nav>
           )}
 
           {activeHighlight && (
@@ -357,7 +567,24 @@ export default function Home() {
                   <h3>{activeHighlight.title}</h3>
                   <p>{activeHighlight.item_count} stories in Instagram order</p>
                 </div>
-                <span className="order-note">1 → {activeHighlight.item_count}</span>
+                <div className="story-browser-actions">
+                  <span className="order-note">1 → {activeHighlight.item_count}</span>
+                  <button
+                    type="button"
+                    onClick={() => startDownload([activeHighlight.title])}
+                    disabled={downloadTarget !== null}
+                    aria-busy={downloadTarget === `highlight:${activeHighlight.title}`}
+                  >
+                    {downloadTarget === `highlight:${activeHighlight.title}` ? (
+                      <><span className="button-spinner" /> {downloadProgress}</>
+                    ) : (
+                      <>Download highlight <span>⇩</span></>
+                    )}
+                  </button>
+                  {downloadError?.target === `highlight:${activeHighlight.title}` && (
+                    <p className="download-error" role="alert">{downloadError.message}</p>
+                  )}
+                </div>
               </div>
 
               {storiesLoading ? (
@@ -372,13 +599,17 @@ export default function Home() {
                       <div className="story-media">
                         {story.type === "video" ? (
                           <video
-                            src={story.preview_url}
+                            src={story.source_url}
                             controls
                             preload="metadata"
                           />
                         ) : (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={story.preview_url} alt={`${activeHighlight.title} story ${story.position}`} />
+                          <img
+                            src={story.source_url}
+                            alt={`${activeHighlight.title} story ${story.position}`}
+                            referrerPolicy="no-referrer"
+                          />
                         )}
                         <span className="story-number">{story.position}</span>
                         <span className="story-type">{story.type}</span>
@@ -402,53 +633,11 @@ export default function Home() {
               <div>
                 <strong>{scan.profile.username}/</strong>
                 <p>
-                  {scan.highlights.length} highlight folders · 1, 2, 3, …
+                  {scan.total_highlights} highlight folders · 1, 2, 3, …
                 </p>
               </div>
             </div>
-            <button type="button" onClick={startDownload} disabled={!scan.highlights.length || job?.status === "downloading"}>
-              Download all as ZIP
-              <span>⇩</span>
-            </button>
           </div>
-        </section>
-      )}
-
-      {job && (
-        <section className={`download-job ${job.status}`}>
-          <div className="job-top">
-            <div>
-              <span className="section-number">
-                {job.status === "complete" ? "ARCHIVE COMPLETE" : "BUILDING YOUR ARCHIVE"}
-              </span>
-              <h2>
-                {job.status === "complete"
-                  ? `Saved @${job.username}`
-                  : job.status === "error"
-                    ? "Download stopped"
-                    : job.current_highlight || "Preparing highlights…"}
-              </h2>
-              <p>
-                {job.status === "complete"
-                  ? `${job.downloaded_items} stories are organized and ready.`
-                  : job.status === "error"
-                    ? job.error
-                    : `Story ${job.current_story || "—"} of ${job.current_story_total || "—"} · ${job.downloaded_items} of ${job.total_items} total`}
-              </p>
-            </div>
-            {job.status === "complete" && (
-              <div className="job-actions">
-                <a href={`${API}/jobs/${job.id}/archive`} download={job.archive_name}>
-                  <span>⇩</span> Download ZIP
-                </a>
-                <button type="button" onClick={openDownloads}><FolderIcon /> Open folder</button>
-              </div>
-            )}
-          </div>
-          {job.status !== "error" && (
-            <div className="progress-track"><span style={{ width: `${job.status === "complete" ? 100 : progress}%` }} /></div>
-          )}
-          {job.output_path && <code>{job.output_path}</code>}
         </section>
       )}
 
@@ -456,9 +645,9 @@ export default function Home() {
         <div>
           <span className="section-number">THE OUTPUT</span>
           <h2>Your archive,<br />already organized.</h2>
-          <p>Highlight names and story order are preserved, with safe filenames for Windows.</p>
+          <p>Highlight names and story order are preserved inside the browser download. Nothing is kept in a server download folder.</p>
         </div>
-        <pre aria-label="Example folder structure">{`downloads/
+        <pre aria-label="Example ZIP structure">{`username-highlights.zip
 └── username/
     ├── Travel/
     │   ├── 1.jpg
@@ -470,34 +659,77 @@ export default function Home() {
       </section>
 
       {loginOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setLoginOpen(false)}>
-          <div className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeLogin}>
+          <form className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title" onSubmit={connectSession} onMouseDown={(event) => event.stopPropagation()}>
             <span className="modal-kicker">LOCAL SESSION</span>
             <h2 id="login-title">Connect Instagram</h2>
-            <p>A separate terminal will ask Instagram for your password and any 2FA code. Keepsake never receives or stores your password.</p>
+            <p>Your credentials are sent only to the local backend to create an Instagram session. The password is discarded after login; session data remains in memory until you disconnect, close this tab, or it becomes inactive.</p>
             <label htmlFor="login-username">Your Instagram username</label>
             <div className="username-input">
               <span>@</span>
               <input
                 id="login-username"
+                name="username"
                 value={loginName}
                 onChange={(event) => setLoginName(event.target.value.replace(/^@/, ""))}
                 placeholder="your_account"
                 autoFocus
+                autoComplete="username"
+                required
               />
             </div>
-            <div className="modal-actions">
-              <button type="button" className="cancel" onClick={() => setLoginOpen(false)}>Cancel</button>
-              <button type="button" className="connect" onClick={connectSession} disabled={!loginName}>Open secure login</button>
+            <label htmlFor="login-password">Instagram password</label>
+            <div className="username-input">
+              <span>⌁</span>
+              <input
+                id="login-password"
+                name="password"
+                type="password"
+                value={loginPassword}
+                onChange={(event) => setLoginPassword(event.target.value)}
+                placeholder="Your password"
+                autoComplete="current-password"
+                required
+              />
             </div>
-          </div>
+            {needsTwoFactor && (
+              <>
+                <label htmlFor="verification-code">Two-factor code</label>
+                <div className="username-input">
+                  <span>#</span>
+                  <input
+                    id="verification-code"
+                    name="verification-code"
+                    inputMode="numeric"
+                    value={verificationCode}
+                    onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))}
+                    placeholder="6-digit code or 8-digit backup code"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]{6}|[0-9]{8}"
+                    autoFocus
+                    required
+                  />
+                </div>
+              </>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="cancel" onClick={closeLogin}>Cancel</button>
+              <button
+                type="submit"
+                className="connect"
+                disabled={!loginName.trim() || !loginPassword || loginLoading || (needsTwoFactor && !/^(?:\d{6}|\d{8})$/.test(verificationCode))}
+              >
+                {loginLoading ? "Connecting…" : "Connect"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
       <footer>
         <a className="brand footer-brand" href="#"><span className="brand-mark"><InstagramIcon /></span>keepsake</a>
         <p>For personal use and content you have permission to save.</p>
-        <span>{downloadRoot ? `Saving to ${downloadRoot}` : "Local-first by design"}</span>
+        <span>Browser download · no server archive</span>
       </footer>
     </main>
   );

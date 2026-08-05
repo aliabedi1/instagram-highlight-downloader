@@ -22,6 +22,9 @@
 .DS_Store
 *.pem
 
+# JetBrains IDEs (PhpStorm)
+/.idea/
+
 # debug
 npm-debug.log*
 yarn-debug.log*

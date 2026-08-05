@@ -1,0 +1,2 @@
+- After completing a given task, create a commit with a message that includes the appropriate commit type.
+- Do not write or run tests.

@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { DM_Sans, Playfair_Display } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
+import "./theme.css";
+
+const themeScript = `try{const theme=localStorage.getItem("keepsake-color-theme");if(theme==="light"||theme==="dark")document.documentElement.dataset.theme=theme}catch{}`;
 
 const dmSans = DM_Sans({
   variable: "--font-sans",
@@ -21,7 +24,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const origin = host ? `${protocol}://${host}` : "http://localhost:3000";
   const title = "Keepsake — Local Instagram Highlight Archiver";
   const description =
-    "Archive every Instagram highlight into organized local folders by username and highlight name.";
+    "Stream Instagram highlights into an organized browser-downloaded ZIP without server-side media storage.";
 
   return {
     title,
@@ -49,7 +52,10 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className={`${dmSans.variable} ${playfair.variable}`}>{children}</body>
     </html>
   );
