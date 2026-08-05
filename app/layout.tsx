@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { DM_Sans, Playfair_Display } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
+import "./theme.css";
 
 const dmSans = DM_Sans({
   variable: "--font-sans",

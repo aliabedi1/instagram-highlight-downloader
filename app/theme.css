@@ -1,0 +1,298 @@
+:root {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --ink: #f5eef3;
+    --muted: #b9afb8;
+    --paper: #171318;
+    --peach: #ff8a70;
+    --plum: #d19bd0;
+    --line: #3c323b;
+    --lavender: #302730;
+    --dark-surface: #211b21;
+    --dark-surface-raised: #292229;
+    --dark-surface-soft: #251e25;
+    --dark-plum-solid: #653568;
+    --dark-plum-hover: #76417a;
+  }
+
+  html {
+    background: var(--paper);
+  }
+
+  body {
+    background: var(--paper);
+  }
+
+  ::selection {
+    color: #211720;
+    background: #ffb3a2;
+  }
+
+  .brand-mark {
+    background: linear-gradient(145deg, #ff8a70, #d3507c 58%, #744078);
+    box-shadow: 0 7px 20px #d3507c33;
+  }
+
+  .local-badge {
+    color: #b8dcc1;
+    background: #203329;
+  }
+
+  .hero::before {
+    background: radial-gradient(circle, #6f3936 0%, #6f393600 70%);
+    opacity: .65;
+  }
+
+  .hero::after {
+    background: radial-gradient(circle, #58345d 0%, #58345d00 70%);
+    opacity: .7;
+  }
+
+  .eyebrow {
+    color: #e8a296;
+  }
+
+  .username-form,
+  .input-shell {
+    background: var(--dark-surface);
+    border-color: #443943;
+    box-shadow: 0 20px 52px #0806095c;
+  }
+
+  .username-form label,
+  .login-modal label,
+  .download-form label {
+    color: #c8bdc6;
+  }
+
+  .username-input,
+  .session-row select,
+  .connected-account,
+  .login-inline {
+    background: var(--dark-surface-raised);
+  }
+
+  .username-input:focus-within {
+    background: #302730;
+    border-color: #b77ab4;
+  }
+
+  .username-input input::placeholder,
+  .input-shell input::placeholder {
+    color: #8e838c;
+  }
+
+  .connected-account span {
+    color: #70c792;
+  }
+
+  .refresh-button,
+  .info-card,
+  .loading-card {
+    background: #332933;
+  }
+
+  .scan-button,
+  .info-card > span,
+  .highlight-pagination button:hover:not(:disabled),
+  .highlight-pagination button.active,
+  .story-browser-actions button,
+  .folder-preview > button,
+  .modal-actions .connect,
+  .input-shell button,
+  .download-all,
+  .how {
+    color: #fff8fc;
+    background: var(--dark-plum-solid);
+    border-color: var(--dark-plum-solid);
+  }
+
+  .input-shell button:hover:not(:disabled) {
+    background: var(--dark-plum-hover);
+  }
+
+  .connect-line {
+    color: #a99da7;
+  }
+
+  .connect-line button {
+    border-bottom-color: #9a6c99;
+  }
+
+  .library,
+  .results {
+    background: #211a21;
+    box-shadow: 0 28px 70px #08060870;
+  }
+
+  .profile-photo {
+    background: var(--dark-surface-raised);
+    border-color: #c27c72;
+  }
+
+  .profile-ready {
+    color: #b9dfc5;
+    background: #21352a;
+  }
+
+  .profile-ready::before {
+    background: #70c792;
+  }
+
+  .select-all {
+    border-color: #665363;
+  }
+
+  .highlight-strip {
+    scrollbar-color: #765a73 transparent;
+  }
+
+  .highlight-ring {
+    background: #4a3d48;
+  }
+
+  .highlight-card.selected .highlight-ring {
+    background: #332932;
+  }
+
+  .highlight-ring i {
+    border-color: #211a21;
+  }
+
+  .highlight-pagination button {
+    color: #e4b8e1;
+    background: var(--dark-surface-raised);
+    border-color: #554553;
+  }
+
+  .empty-highlights {
+    background: #2a222ab8;
+  }
+
+  .story-browser {
+    background: var(--dark-surface-raised);
+    border-color: #443843;
+  }
+
+  .order-note {
+    color: #dfb1d8;
+    background: #3a2c39;
+  }
+
+  .story-card,
+  .media-card,
+  .folder-preview {
+    background: var(--dark-surface-raised);
+    border-color: #443943;
+    box-shadow: 0 12px 34px #08060866;
+  }
+
+  .story-media,
+  .media-frame {
+    background: #3c323b;
+  }
+
+  .story-type,
+  .type-pill {
+    background: #120f13c7;
+  }
+
+  .folder-icon {
+    color: #efaa9d;
+    background: #402925;
+  }
+
+  .download-job {
+    background: #57305a;
+    box-shadow: 0 30px 78px #08060873;
+  }
+
+  .download-job.complete {
+    background: #25483a;
+  }
+
+  .download-job.error {
+    background: #653833;
+  }
+
+  .job-actions a {
+    color: #261819;
+  }
+
+  .job-actions button {
+    color: #d8a7d6;
+    background: #2b222b;
+  }
+
+  .download-job.complete .job-actions button {
+    color: #b9dfc5;
+  }
+
+  .structure-section {
+    background: #201a20;
+  }
+
+  .structure-section pre {
+    color: #f0e3ed;
+    background: #100d11;
+    box-shadow: 0 20px 46px #08060880;
+  }
+
+  .modal-backdrop {
+    background: #0b090ccc;
+  }
+
+  .login-modal {
+    background: #201a20;
+    border: 1px solid #40353f;
+    box-shadow: 0 32px 96px #050405b8;
+  }
+
+  .modal-actions .cancel {
+    border-color: #51434f;
+  }
+
+  .input-shell:focus-within {
+    border-color: #a66fa4;
+    box-shadow: 0 20px 52px #08060970, 0 0 0 4px #d19bd018;
+  }
+
+  .input-icon {
+    color: #c39abb;
+  }
+
+  .meta-divider {
+    background: #665b64;
+  }
+
+  .error-card {
+    color: #ffd4ce;
+    background: #492724;
+  }
+
+  .error-card > span {
+    background: #b9574d;
+  }
+
+  .loader {
+    border-color: #d19bd02b;
+    border-top-color: var(--plum);
+  }
+
+  .section-number {
+    color: #e0b8dc;
+  }
+
+  .steps p,
+  .job-top p {
+    color: #d7c7d4;
+  }
+
+  footer {
+    border-top-color: var(--line);
+  }
+}
