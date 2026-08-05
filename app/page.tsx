@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 
 const API = "http://127.0.0.1:8787/api";
+const SESSION_KEY = "keepsake-browser-session";
 
 type Highlight = {
   id: string;
@@ -20,7 +21,6 @@ type ScanResult = {
     is_private: boolean;
   };
   highlights: Highlight[];
-  download_path: string;
 };
 
 type Story = {
@@ -47,10 +47,18 @@ type Job = {
   current_highlight: string;
   current_story: number;
   current_story_total: number;
-  output_path?: string;
   archive_name?: string;
   error?: string;
 };
+
+class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 function InstagramIcon() {
   return (
@@ -72,20 +80,26 @@ function FolderIcon() {
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 30000);
+  const timeout = window.setTimeout(() => controller.abort(), 90000);
   try {
+    const sessionToken = window.sessionStorage.getItem(SESSION_KEY);
+    const headers = new Headers(options?.headers);
+    if (options?.body) headers.set("Content-Type", "application/json");
+    if (sessionToken) headers.set("X-Keepsake-Session", sessionToken);
     const response = await fetch(`${API}${path}`, {
       ...options,
       signal: options?.signal || controller.signal,
-      headers: options?.body ? { "Content-Type": "application/json" } : undefined,
+      headers,
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Something went wrong.");
+    if (!response.ok) {
+      throw new ApiError(data.detail || "Something went wrong.", response.status);
+    }
     return data;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(
-        "Instagram did not respond within 30 seconds. The scan was stopped; wait a few minutes before trying again.",
+        "Instagram did not respond within 90 seconds. The request was stopped; wait before trying again.",
       );
     }
     throw error;
@@ -97,8 +111,6 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 export default function Home() {
   const [target, setTarget] = useState("");
   const [viewer, setViewer] = useState("");
-  const [sessions, setSessions] = useState<string[]>([]);
-  const [downloadRoot, setDownloadRoot] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [activeHighlight, setActiveHighlight] = useState<Highlight | null>(null);
   const [stories, setStories] = useState<Story[]>([]);
@@ -108,13 +120,16 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     try {
-      const data = await api<{ sessions: string[]; download_root: string }>("/status");
-      setSessions(data.sessions);
-      setDownloadRoot(data.download_root);
-      setViewer((current) => current || data.sessions[0] || "");
+      const data = await api<{ connected: boolean; username: string | null }>("/status");
+      setViewer(data.connected ? data.username || "" : "");
+      if (!data.connected) window.sessionStorage.removeItem(SESSION_KEY);
       setMessage("");
     } catch {
       setMessage("The local download service is not running. Start the app with start-local.ps1.");
@@ -122,28 +137,16 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    refreshStatus();
+    const timer = window.setTimeout(refreshStatus, 0);
+    return () => window.clearTimeout(timer);
   }, [refreshStatus]);
 
   useEffect(() => {
-    if (!job || !["queued", "downloading"].includes(job.status)) return;
-    const timer = window.setInterval(async () => {
-      try {
-        const next = await api<Job>(`/jobs/${job.id}`);
-        setJob(next);
-      } catch (error) {
-        setJob((current) =>
-          current ? { ...current, status: "error", error: String(error) } : null,
-        );
-      }
-    }, 1200);
+    if (!viewer) return;
+    const heartbeat = () => api("/session/heartbeat", { method: "POST" }).catch(() => setViewer(""));
+    const timer = window.setInterval(heartbeat, 45_000);
     return () => window.clearInterval(timer);
-  }, [job]);
-
-  const progress = useMemo(() => {
-    if (!job?.total_items) return 0;
-    return Math.min(100, Math.round((job.downloaded_items / job.total_items) * 100));
-  }, [job]);
+  }, [viewer]);
 
   async function handleScan(event: FormEvent) {
     event.preventDefault();
@@ -156,7 +159,6 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({
           target_username: target,
-          session_username: viewer,
         }),
       });
       setScan(data);
@@ -180,7 +182,6 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({
           target_username: profileUsername || scan?.profile.username || target,
-          session_username: viewer,
           highlight_id: highlight.id,
         }),
       });
@@ -195,15 +196,50 @@ export default function Home() {
   }
 
   async function connectSession() {
+    setLoginLoading(true);
+    setMessage("");
     try {
-      const data = await api<{ message: string }>("/session/login", {
+      const data = await api<{ session_token: string; username: string }>("/session/login", {
         method: "POST",
-        body: JSON.stringify({ username: loginName }),
+        body: JSON.stringify({
+          username: loginName,
+          password: loginPassword,
+          verification_code: verificationCode,
+        }),
       });
-      setMessage(data.message);
+      window.sessionStorage.setItem(SESSION_KEY, data.session_token);
+      setViewer(data.username);
+      setLoginPassword("");
+      setVerificationCode("");
+      setNeedsTwoFactor(false);
+      setMessage(`Connected as @${data.username}. Login data stays in memory only while this tab is active.`);
       setLoginOpen(false);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setNeedsTwoFactor(true);
+      }
       setMessage(error instanceof Error ? error.message : "Could not open login.");
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  function closeLogin() {
+    setLoginOpen(false);
+    setLoginPassword("");
+    setVerificationCode("");
+    setNeedsTwoFactor(false);
+  }
+
+  async function disconnectSession() {
+    try {
+      await api("/session", { method: "DELETE" });
+    } finally {
+      window.sessionStorage.removeItem(SESSION_KEY);
+      setViewer("");
+      setScan(null);
+      setJob(null);
+      setMessage("Instagram session removed from memory.");
     }
   }
 
@@ -215,31 +251,14 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({
           target_username: scan.profile.username,
-          session_username: viewer,
           highlight_titles: null,
         }),
       });
-      setJob({
-        id: data.job_id,
-        status: "queued",
-        username: scan.profile.username,
-        downloaded_items: 0,
-        skipped_items: 0,
-        total_items: scan.highlights.reduce(
-          (sum, highlight) => sum + highlight.item_count,
-          0,
-        ),
-        current_highlight: "",
-        current_story: 0,
-        current_story_total: 0,
-      });
+      const ready = await api<Job>(`/jobs/${data.job_id}`);
+      setJob(ready);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Download could not start.");
     }
-  }
-
-  async function openDownloads() {
-    await api("/open-downloads", { method: "POST" });
   }
 
   return (
@@ -249,7 +268,7 @@ export default function Home() {
           <span className="brand-mark"><InstagramIcon /></span>
           keepsake
         </a>
-        <span className="local-badge"><span /> Running locally</span>
+        <span className="local-badge"><span /> {viewer ? `Connected @${viewer}` : "Login required"}</span>
       </nav>
 
       <section className="hero local-hero">
@@ -276,22 +295,17 @@ export default function Home() {
             </div>
           </div>
           <div className="session-field">
-            <label htmlFor="session">Connected as</label>
-            <div className="session-row">
-              <select
-                id="session"
-                value={viewer}
-                onChange={(event) => setViewer(event.target.value)}
-              >
-                <option value="">Choose a session</option>
-                {sessions.map((session) => (
-                  <option key={session} value={session}>@{session}</option>
-                ))}
-              </select>
-              <button type="button" className="refresh-button" onClick={refreshStatus}>
-                Refresh
+            <label>Instagram session</label>
+            {viewer ? (
+              <div className="connected-account">
+                <span>●</span>
+                <strong>@{viewer}</strong>
+              </div>
+            ) : (
+              <button type="button" className="login-inline" onClick={() => setLoginOpen(true)}>
+                Connect Instagram
               </button>
-            </div>
+            )}
           </div>
           <button className="scan-button" type="submit" disabled={!target || !viewer || status === "scanning"}>
             {status === "scanning" ? "Finding highlights…" : "Show highlights"}
@@ -300,8 +314,12 @@ export default function Home() {
         </form>
 
         <div className="connect-line">
-          <span>Instagram requires a viewer session, even for public highlights.</span>
-          <button type="button" onClick={() => setLoginOpen(true)}>Connect another account</button>
+          <span>Your Instagram login exists only in memory while this tab stays active.</span>
+          {viewer ? (
+            <button type="button" onClick={disconnectSession}>Disconnect</button>
+          ) : (
+            <button type="button" onClick={() => setLoginOpen(true)}>Connect account</button>
+          )}
         </div>
 
         {message && (
@@ -407,7 +425,7 @@ export default function Home() {
               </div>
             </div>
             <button type="button" onClick={startDownload} disabled={!scan.highlights.length || job?.status === "downloading"}>
-              Download all as ZIP
+              Prepare browser download
               <span>⇩</span>
             </button>
           </div>
@@ -423,14 +441,14 @@ export default function Home() {
               </span>
               <h2>
                 {job.status === "complete"
-                  ? `Saved @${job.username}`
+                  ? `Ready for @${job.username}`
                   : job.status === "error"
                     ? "Download stopped"
                     : job.current_highlight || "Preparing highlights…"}
               </h2>
               <p>
                 {job.status === "complete"
-                  ? `${job.downloaded_items} stories are organized and ready.`
+                  ? `${job.downloaded_items} stories will stream straight to your browser as a ZIP.`
                   : job.status === "error"
                     ? job.error
                     : `Story ${job.current_story || "—"} of ${job.current_story_total || "—"} · ${job.downloaded_items} of ${job.total_items} total`}
@@ -441,14 +459,12 @@ export default function Home() {
                 <a href={`${API}/jobs/${job.id}/archive`} download={job.archive_name}>
                   <span>⇩</span> Download ZIP
                 </a>
-                <button type="button" onClick={openDownloads}><FolderIcon /> Open folder</button>
               </div>
             )}
           </div>
           {job.status !== "error" && (
-            <div className="progress-track"><span style={{ width: `${job.status === "complete" ? 100 : progress}%` }} /></div>
+            <div className="progress-track"><span style={{ width: `${job.status === "complete" ? 100 : 0}%` }} /></div>
           )}
-          {job.output_path && <code>{job.output_path}</code>}
         </section>
       )}
 
@@ -456,9 +472,9 @@ export default function Home() {
         <div>
           <span className="section-number">THE OUTPUT</span>
           <h2>Your archive,<br />already organized.</h2>
-          <p>Highlight names and story order are preserved, with safe filenames for Windows.</p>
+          <p>Highlight names and story order are preserved inside the browser download. Nothing is kept in a server download folder.</p>
         </div>
-        <pre aria-label="Example folder structure">{`downloads/
+        <pre aria-label="Example ZIP structure">{`username-highlights.zip
 └── username/
     ├── Travel/
     │   ├── 1.jpg
@@ -470,11 +486,11 @@ export default function Home() {
       </section>
 
       {loginOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setLoginOpen(false)}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeLogin}>
           <div className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title" onMouseDown={(event) => event.stopPropagation()}>
             <span className="modal-kicker">LOCAL SESSION</span>
             <h2 id="login-title">Connect Instagram</h2>
-            <p>A separate terminal will ask Instagram for your password and any 2FA code. Keepsake never receives or stores your password.</p>
+            <p>Your credentials are sent only to the local backend to create an Instagram session. The password is discarded after login; session data remains in memory until you disconnect, close this tab, or it becomes inactive.</p>
             <label htmlFor="login-username">Your Instagram username</label>
             <div className="username-input">
               <span>@</span>
@@ -484,11 +500,47 @@ export default function Home() {
                 onChange={(event) => setLoginName(event.target.value.replace(/^@/, ""))}
                 placeholder="your_account"
                 autoFocus
+                autoComplete="username"
               />
             </div>
+            <label htmlFor="login-password">Instagram password</label>
+            <div className="username-input">
+              <span>⌁</span>
+              <input
+                id="login-password"
+                type="password"
+                value={loginPassword}
+                onChange={(event) => setLoginPassword(event.target.value)}
+                placeholder="Your password"
+                autoComplete="current-password"
+              />
+            </div>
+            {needsTwoFactor && (
+              <>
+                <label htmlFor="verification-code">Two-factor code</label>
+                <div className="username-input">
+                  <span>#</span>
+                  <input
+                    id="verification-code"
+                    inputMode="numeric"
+                    value={verificationCode}
+                    onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))}
+                    placeholder="6-digit code or 8-digit backup code"
+                    autoComplete="one-time-code"
+                  />
+                </div>
+              </>
+            )}
             <div className="modal-actions">
-              <button type="button" className="cancel" onClick={() => setLoginOpen(false)}>Cancel</button>
-              <button type="button" className="connect" onClick={connectSession} disabled={!loginName}>Open secure login</button>
+              <button type="button" className="cancel" onClick={closeLogin}>Cancel</button>
+              <button
+                type="button"
+                className="connect"
+                onClick={connectSession}
+                disabled={!loginName || !loginPassword || loginLoading || (needsTwoFactor && !verificationCode)}
+              >
+                {loginLoading ? "Connecting…" : "Connect"}
+              </button>
             </div>
           </div>
         </div>
@@ -497,7 +549,7 @@ export default function Home() {
       <footer>
         <a className="brand footer-brand" href="#"><span className="brand-mark"><InstagramIcon /></span>keepsake</a>
         <p>For personal use and content you have permission to save.</p>
-        <span>{downloadRoot ? `Saving to ${downloadRoot}` : "Local-first by design"}</span>
+        <span>Browser download · no server archive</span>
       </footer>
     </main>
   );
