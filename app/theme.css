@@ -155,7 +155,7 @@ body {
 .highlight-pagination button:hover:not(:disabled),
 .highlight-pagination button.active,
 .story-browser-actions button,
-.folder-preview > button,
+.folder-download-control > button,
 .modal-actions .connect,
 .input-shell button,
 .download-all,
@@ -260,32 +260,6 @@ body {
   background: light-dark(#fce6df, #402925);
 }
 
-.download-job {
-  background: light-dark(#5d2d63, #57305a);
-  box-shadow: 0 30px 78px light-dark(#5d2d6325, #08060873);
-}
-
-.download-job.complete {
-  background: light-dark(#315d4b, #25483a);
-}
-
-.download-job.error {
-  background: light-dark(#80443f, #653833);
-}
-
-.job-actions a {
-  color: light-dark(#fff, #261819);
-}
-
-.job-actions button {
-  color: light-dark(#315d4b, #d8a7d6);
-  background: light-dark(#fff, #2b222b);
-}
-
-.download-job.complete .job-actions button {
-  color: light-dark(#315d4b, #b9dfc5);
-}
-
 .structure-section {
   background: light-dark(#f4eee9, #201a20);
 }
@@ -332,6 +306,11 @@ body {
   background: light-dark(#c95a4e, #b9574d);
 }
 
+.story-browser-actions .download-error,
+.download-error {
+  color: light-dark(#a33f37, #f1a49b);
+}
+
 .loader {
   border-color: light-dark(#aa8ca722, #d19bd02b);
   border-top-color: var(--plum);
@@ -341,8 +320,7 @@ body {
   color: light-dark(#d9b8d3, #e0b8dc);
 }
 
-.steps p,
-.job-top p {
+.steps p {
   color: light-dark(#d5c3d4, #d7c7d4);
 }
 

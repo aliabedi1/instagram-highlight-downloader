@@ -42,20 +42,6 @@ type StoryResult = {
   stories: Story[];
 };
 
-type Job = {
-  id: string;
-  status: "queued" | "downloading" | "complete" | "error";
-  username: string;
-  downloaded_items: number;
-  skipped_items: number;
-  total_items: number;
-  current_highlight: string;
-  current_story: number;
-  current_story_total: number;
-  archive_name?: string;
-  error?: string;
-};
-
 class ApiError extends Error {
   status: number;
 
@@ -120,7 +106,8 @@ export default function Home() {
   const [activeHighlight, setActiveHighlight] = useState<Highlight | null>(null);
   const [stories, setStories] = useState<Story[]>([]);
   const [storiesLoading, setStoriesLoading] = useState(false);
-  const [job, setJob] = useState<Job | null>(null);
+  const [downloadTarget, setDownloadTarget] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<{ target: string; message: string } | null>(null);
   const [status, setStatus] = useState<"idle" | "scanning" | "error">("idle");
   const [message, setMessage] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
@@ -168,7 +155,8 @@ export default function Home() {
     setStatus("scanning");
     setMessage("");
     setScan(null);
-    setJob(null);
+    setDownloadTarget(null);
+    setDownloadError(null);
     setHighlightPage(1);
     setActiveHighlight(null);
     setStories([]);
@@ -279,13 +267,20 @@ export default function Home() {
       window.sessionStorage.removeItem(SESSION_KEY);
       setViewer("");
       setScan(null);
-      setJob(null);
+      setDownloadTarget(null);
+      setDownloadError(null);
       setMessage("Instagram session removed from memory.");
     }
   }
 
   async function startDownload(highlightTitles: string[] | null = null) {
-    if (!scan) return;
+    if (!scan || downloadTarget) return;
+    const requestedTarget = highlightTitles?.[0]
+      ? `highlight:${highlightTitles[0]}`
+      : "all";
+
+    setDownloadTarget(requestedTarget);
+    setDownloadError(null);
     setMessage("");
     try {
       const data = await api<{ job_id: string }>("/highlights/download", {
@@ -295,10 +290,20 @@ export default function Home() {
           highlight_titles: highlightTitles,
         }),
       });
-      const ready = await api<Job>(`/jobs/${data.job_id}`);
-      setJob(ready);
+      const downloadLink = document.createElement("a");
+      downloadLink.href = `${API}/jobs/${data.job_id}/archive`;
+      downloadLink.download = "";
+      downloadLink.hidden = true;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      downloadLink.remove();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Download could not start.");
+      setDownloadError({
+        target: requestedTarget,
+        message: error instanceof Error ? error.message : "Download could not start.",
+      });
+    } finally {
+      setDownloadTarget(null);
     }
   }
 
@@ -477,9 +482,18 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => startDownload([activeHighlight.title])}
+                    disabled={downloadTarget !== null}
+                    aria-busy={downloadTarget === `highlight:${activeHighlight.title}`}
                   >
-                    Download highlight <span>⇩</span>
+                    {downloadTarget === `highlight:${activeHighlight.title}` ? (
+                      <><span className="button-spinner" /> Preparing download…</>
+                    ) : (
+                      <>Download highlight <span>⇩</span></>
+                    )}
                   </button>
+                  {downloadError?.target === `highlight:${activeHighlight.title}` && (
+                    <p className="download-error" role="alert">{downloadError.message}</p>
+                  )}
                 </div>
               </div>
 
@@ -533,47 +547,24 @@ export default function Home() {
                 </p>
               </div>
             </div>
-            <button type="button" onClick={() => startDownload()} disabled={!scan.highlights.length || job?.status === "downloading"}>
-              Prepare browser download
-              <span>⇩</span>
-            </button>
-          </div>
-        </section>
-      )}
-
-      {job && (
-        <section className={`download-job ${job.status}`}>
-          <div className="job-top">
-            <div>
-              <span className="section-number">
-                {job.status === "complete" ? "ARCHIVE COMPLETE" : "BUILDING YOUR ARCHIVE"}
-              </span>
-              <h2>
-                {job.status === "complete"
-                  ? `Ready for @${job.username}`
-                  : job.status === "error"
-                    ? "Download stopped"
-                    : job.current_highlight || "Preparing highlights…"}
-              </h2>
-              <p>
-                {job.status === "complete"
-                  ? `${job.downloaded_items} stories will stream straight to your browser as a ZIP.`
-                  : job.status === "error"
-                    ? job.error
-                    : `Story ${job.current_story || "—"} of ${job.current_story_total || "—"} · ${job.downloaded_items} of ${job.total_items} total`}
-              </p>
+            <div className="folder-download-control">
+              <button
+                type="button"
+                onClick={() => startDownload()}
+                disabled={!scan.highlights.length || downloadTarget !== null}
+                aria-busy={downloadTarget === "all"}
+              >
+                {downloadTarget === "all" ? (
+                  <><span className="button-spinner" /> Preparing download…</>
+                ) : (
+                  <>Download all highlights <span>⇩</span></>
+                )}
+              </button>
+              {downloadError?.target === "all" && (
+                <p className="download-error" role="alert">{downloadError.message}</p>
+              )}
             </div>
-            {job.status === "complete" && (
-              <div className="job-actions">
-                <a href={`${API}/jobs/${job.id}/archive`} download={job.archive_name}>
-                  <span>⇩</span> Download ZIP
-                </a>
-              </div>
-            )}
           </div>
-          {job.status !== "error" && (
-            <div className="progress-track"><span style={{ width: `${job.status === "complete" ? 100 : 0}%` }} /></div>
-          )}
         </section>
       )}
 

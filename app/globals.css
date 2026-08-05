@@ -655,6 +655,9 @@ h1 em { color: var(--peach); font-weight: 500; }
 }
 
 .story-browser-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   border: 0;
   border-radius: 999px;
   background: var(--ink);
@@ -666,7 +669,27 @@ h1 em { color: var(--peach); font-weight: 500; }
   padding: 10px 14px;
 }
 
+.story-browser-actions button:disabled { cursor: wait; opacity: .72; }
 .story-browser-actions button span { color: var(--peach); }
+
+.button-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid #ffffff66;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+
+.story-browser-actions .download-error,
+.download-error {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: right;
+}
 
 .stories-loading {
   min-height: 220px;
@@ -787,8 +810,7 @@ h1 em { color: var(--peach); font-weight: 500; }
   border-radius: 11px;
 }
 
-.folder-icon svg,
-.job-top button svg {
+.folder-icon svg {
   width: 21px;
   fill: none;
   stroke: currentColor;
@@ -799,8 +821,7 @@ h1 em { color: var(--peach); font-weight: 500; }
 .folder-tree strong { font-family: var(--font-display), Georgia, serif; font-size: 17px; }
 .folder-tree p { margin: 3px 0 0; color: var(--muted); font-size: 10px; }
 
-.folder-preview > button,
-.job-top button {
+.folder-download-control > button {
   min-height: 46px;
   padding: 0 18px;
   display: flex;
@@ -815,93 +836,14 @@ h1 em { color: var(--peach); font-weight: 500; }
   font-weight: 800;
 }
 
-.job-actions {
+.folder-download-control {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 7px;
 }
 
-.job-actions a,
-.job-actions button {
-  min-height: 46px;
-  padding: 0 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  color: #315d4b;
-  background: white;
-  border: 0;
-  border-radius: 11px;
-  cursor: pointer;
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.job-actions a {
-  color: white;
-  background: var(--peach);
-}
-
-.folder-preview > button:disabled { opacity: .45; cursor: not-allowed; }
-
-.download-job {
-  width: min(960px, calc(100% - 48px));
-  margin: 0 auto 86px;
-  padding: 38px;
-  color: white;
-  background: var(--plum);
-  border-radius: 24px;
-  box-shadow: 0 28px 70px #5d2d6325;
-}
-
-.download-job.complete { background: #315d4b; }
-.download-job.error { background: #80443f; }
-
-.job-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 25px;
-}
-
-.job-top h2 {
-  margin: 6px 0 4px;
-  font-family: var(--font-display), Georgia, serif;
-  font-size: 32px;
-  font-weight: 500;
-}
-
-.job-top p { margin: 0; color: #d8c7d6; font-size: 11px; }
-.download-job.complete .job-top p { color: #cde1d8; }
-.job-top button { color: var(--plum); background: white; }
-.download-job.complete .job-top button { color: #315d4b; }
-
-.progress-track {
-  height: 6px;
-  margin-top: 26px;
-  overflow: hidden;
-  background: #ffffff1c;
-  border-radius: 999px;
-}
-
-.progress-track span {
-  height: 100%;
-  display: block;
-  background: linear-gradient(90deg, #f5a38d, #ffd1c1);
-  border-radius: inherit;
-  transition: width .4s ease;
-}
-
-.download-job code {
-  display: block;
-  margin-top: 18px;
-  overflow: hidden;
-  color: #cde1d8;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.folder-download-control > button:disabled { opacity: .6; cursor: wait; }
 
 .structure-section {
   width: min(1180px, calc(100% - 48px));
@@ -1237,13 +1179,13 @@ footer b { color: var(--peach); }
   .highlight-ring { width: 88px; height: 88px; }
   .highlight-pagination { flex-wrap: wrap; }
   .highlight-pagination > span { order: -1; width: 100%; text-align: center; }
-  .folder-preview, .job-top { align-items: stretch; flex-direction: column; }
+  .folder-preview { align-items: stretch; flex-direction: column; }
   .story-browser { padding: 20px 14px; }
   .story-browser-head { align-items: flex-start; flex-direction: column; }
   .story-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .folder-preview > button, .job-top button { justify-content: center; }
-  .job-actions { align-items: stretch; flex-direction: column; }
-  .download-job { width: calc(100% - 28px); padding: 28px 22px; }
+  .folder-download-control, .folder-download-control > button { width: 100%; }
+  .folder-download-control > button { justify-content: center; }
+  .download-error { text-align: left; }
   .structure-section { width: calc(100% - 28px); padding: 45px 22px; border-radius: 22px; }
   .structure-section pre { padding: 22px 16px; font-size: 10px; }
 }
