@@ -592,6 +592,35 @@ h1 em { color: var(--peach); font-weight: 500; }
   gap: 6px;
 }
 
+.highlight-page-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.page-ellipsis {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.highlight-page-loading {
+  width: 100%;
+  min-height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.highlight-strip[aria-busy="true"] {
+  display: flex;
+  overflow: hidden;
+}
+
 .highlight-pagination > span {
   color: var(--muted);
   font-size: 10px;

@@ -34,6 +34,7 @@ from pydantic import BaseModel, SecretStr
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 SESSION_TTL_SECONDS = 10 * 60
 ARCHIVE_TTL_SECONDS = 30 * 60
+HIGHLIGHTS_PER_PAGE = 20
 
 
 app = FastAPI(title="Keepsake Local API", version="3.0")
@@ -58,6 +59,10 @@ class ScanRequest(BaseModel):
 
 class StoriesRequest(ScanRequest):
     highlight_id: str
+
+
+class HighlightsPageRequest(ScanRequest):
+    page: int
 
 
 class DownloadRequest(ScanRequest):
@@ -318,10 +323,30 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
     }
 
 
-def public_scan_payload(scan: dict[str, Any]) -> dict[str, Any]:
+def public_scan_payload(scan: dict[str, Any], page: int = 1) -> dict[str, Any]:
+    total_highlights = len(scan["highlights"])
+    total_pages = (
+        (total_highlights + HIGHLIGHTS_PER_PAGE - 1) // HIGHLIGHTS_PER_PAGE
+        if total_highlights
+        else 0
+    )
+    if (
+        page < 1
+        or (not total_pages and page != 1)
+        or (total_pages and page > total_pages)
+    ):
+        raise HTTPException(status_code=404, detail="That highlight page does not exist.")
+
+    first_highlight = (page - 1) * HIGHLIGHTS_PER_PAGE
+    page_highlights = scan["highlights"][
+        first_highlight : first_highlight + HIGHLIGHTS_PER_PAGE
+    ]
     return {
         "profile": dict(scan["profile"]),
-        "total_highlights": len(scan["highlights"]),
+        "page": page,
+        "page_size": HIGHLIGHTS_PER_PAGE,
+        "total_pages": total_pages,
+        "total_highlights": total_highlights,
         "total_stories": sum(
             highlight["item_count"] for highlight in scan["highlights"]
         ),
@@ -331,7 +356,7 @@ def public_scan_payload(scan: dict[str, Any]) -> dict[str, Any]:
                 for key, value in highlight.items()
                 if key not in {"stories", "folder_name", "stories_loaded"}
             }
-            for highlight in scan["highlights"]
+            for highlight in page_highlights
         ],
     }
 
@@ -524,6 +549,19 @@ def scan_highlights(
         )
     session.scans[target] = scan
     return public_scan_payload(scan)
+
+
+@app.post("/api/highlights/page")
+def scan_highlights_page(
+    request: HighlightsPageRequest,
+    session_token: str | None = Header(default=None, alias="X-Keepsake-Session"),
+) -> dict[str, Any]:
+    session = get_session(session_token)
+    target = clean_target(request.target_username)
+    scan = session.scans.get(target)
+    if not scan:
+        raise HTTPException(status_code=409, detail="Scan this profile again first.")
+    return public_scan_payload(scan, request.page)
 
 
 @app.post("/api/highlights/stories")

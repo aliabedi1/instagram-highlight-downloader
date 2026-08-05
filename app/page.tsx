@@ -5,7 +5,6 @@ import ThemeSelector from "./theme-selector";
 
 const API = "http://127.0.0.1:8787/api";
 const SESSION_KEY = "keepsake-browser-session";
-const HIGHLIGHTS_PER_PAGE = 20;
 
 type Highlight = {
   id: string;
@@ -23,6 +22,9 @@ type ScanResult = {
     is_private: boolean;
   };
   highlights: Highlight[];
+  page: number;
+  page_size: number;
+  total_pages: number;
   total_highlights: number;
   total_stories: number;
 };
@@ -117,15 +119,22 @@ export default function Home() {
   const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
   const [highlightPage, setHighlightPage] = useState(1);
+  const [highlightPageLoading, setHighlightPageLoading] = useState(false);
 
-  const totalHighlightPages = scan
-    ? Math.ceil(scan.total_highlights / HIGHLIGHTS_PER_PAGE)
+  const totalHighlightPages = scan?.total_pages ?? 0;
+  const firstVisibleHighlight = scan
+    ? (scan.page - 1) * scan.page_size
     : 0;
-  const firstVisibleHighlight = (highlightPage - 1) * HIGHLIGHTS_PER_PAGE;
-  const visibleHighlights = scan?.highlights.slice(
-    firstVisibleHighlight,
-    firstVisibleHighlight + HIGHLIGHTS_PER_PAGE,
-  ) ?? [];
+  const visibleHighlights = scan?.highlights ?? [];
+  const visiblePageNumbers = totalHighlightPages <= 7
+    ? Array.from({ length: totalHighlightPages }, (_, index) => index + 1)
+    : Array.from(new Set([
+        1,
+        Math.max(2, highlightPage - 1),
+        highlightPage,
+        Math.min(totalHighlightPages - 1, highlightPage + 1),
+        totalHighlightPages,
+      ])).sort((first, second) => first - second);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -168,6 +177,7 @@ export default function Home() {
         }),
       });
       setScan(data);
+      setHighlightPage(data.page);
       setStatus("idle");
     } catch (error) {
       setStatus("error");
@@ -247,10 +257,36 @@ export default function Home() {
     }
   }
 
-  function changeHighlightPage(page: number) {
-    setHighlightPage(page);
+  async function changeHighlightPage(page: number) {
+    if (
+      !scan
+      || highlightPageLoading
+      || page === highlightPage
+      || page < 1
+      || page > totalHighlightPages
+    ) return;
+
+    setHighlightPageLoading(true);
+    setMessage("");
     setActiveHighlight(null);
     setStories([]);
+    try {
+      const data = await api<ScanResult>("/highlights/page", {
+        method: "POST",
+        body: JSON.stringify({
+          target_username: scan.profile.username,
+          page,
+        }),
+      });
+      setScan(data);
+      setHighlightPage(data.page);
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not load that highlight page.",
+      );
+    } finally {
+      setHighlightPageLoading(false);
+    }
   }
 
   function closeLogin() {
@@ -405,28 +441,34 @@ export default function Home() {
                   <strong>Choose a highlight</strong> to preview its stories
                 </p>
               )}
-              <div className="highlight-strip">
-                {visibleHighlights.map((highlight) => (
-                  <button
-                    type="button"
-                    className={`highlight-card ${activeHighlight?.id === highlight.id ? "selected" : ""}`}
-                    key={highlight.id}
-                    onClick={() => loadStories(highlight)}
-                    aria-pressed={activeHighlight?.id === highlight.id}
-                  >
-                    <span className="highlight-ring">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={highlight.cover_url}
-                        alt=""
-                        referrerPolicy="no-referrer"
-                      />
-                      <i>{activeHighlight?.id === highlight.id ? "●" : ""}</i>
-                    </span>
-                    <strong>{highlight.title}</strong>
-                    <small>{highlight.item_count} stories</small>
-                  </button>
-                ))}
+              <div className="highlight-strip" aria-busy={highlightPageLoading}>
+                {highlightPageLoading ? (
+                  <div className="highlight-page-loading" role="status">
+                    <span className="loader" />
+                    Loading highlight page…
+                  </div>
+                ) : visibleHighlights.map((highlight) => (
+                    <button
+                      type="button"
+                      className={`highlight-card ${activeHighlight?.id === highlight.id ? "selected" : ""}`}
+                      key={highlight.id}
+                      onClick={() => loadStories(highlight)}
+                      aria-pressed={activeHighlight?.id === highlight.id}
+                    >
+                      <span className="highlight-ring">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={highlight.cover_url}
+                          alt=""
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                        />
+                        <i>{activeHighlight?.id === highlight.id ? "●" : ""}</i>
+                      </span>
+                      <strong>{highlight.title}</strong>
+                      <small>{highlight.item_count} stories</small>
+                    </button>
+                  ))}
               </div>
             </>
           ) : (
@@ -438,31 +480,36 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => changeHighlightPage(highlightPage - 1)}
-                disabled={highlightPage === 1}
+                disabled={highlightPageLoading || highlightPage === 1}
               >
                 Previous
               </button>
               <div className="highlight-pages">
-                {Array.from({ length: totalHighlightPages }, (_, index) => index + 1).map((page) => (
-                  <button
-                    type="button"
-                    className={page === highlightPage ? "active" : ""}
-                    key={page}
-                    onClick={() => changeHighlightPage(page)}
-                    aria-label={`Page ${page}`}
-                    aria-current={page === highlightPage ? "page" : undefined}
-                  >
-                    {page}
-                  </button>
+                {visiblePageNumbers.map((page, index) => (
+                  <span className="highlight-page-control" key={page}>
+                    {index > 0 && page - visiblePageNumbers[index - 1] > 1 && (
+                      <span className="page-ellipsis" aria-hidden="true">…</span>
+                    )}
+                    <button
+                      type="button"
+                      className={page === highlightPage ? "active" : ""}
+                      onClick={() => changeHighlightPage(page)}
+                      disabled={highlightPageLoading}
+                      aria-label={`Page ${page}`}
+                      aria-current={page === highlightPage ? "page" : undefined}
+                    >
+                      {page}
+                    </button>
+                  </span>
                 ))}
               </div>
               <span>
-                {firstVisibleHighlight + 1}–{Math.min(firstVisibleHighlight + HIGHLIGHTS_PER_PAGE, scan.total_highlights)} of {scan.total_highlights}
+                {firstVisibleHighlight + 1}–{Math.min(firstVisibleHighlight + scan.page_size, scan.total_highlights)} of {scan.total_highlights}
               </span>
               <button
                 type="button"
                 onClick={() => changeHighlightPage(highlightPage + 1)}
-                disabled={highlightPage === totalHighlightPages}
+                disabled={highlightPageLoading || highlightPage === totalHighlightPages}
               >
                 Next
               </button>
@@ -551,7 +598,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => startDownload()}
-                disabled={!scan.highlights.length || downloadTarget !== null}
+                disabled={!scan.total_highlights || downloadTarget !== null}
                 aria-busy={downloadTarget === "all"}
               >
                 {downloadTarget === "all" ? (
