@@ -28,6 +28,7 @@ type Story = {
   position: number;
   type: "image" | "video";
   filename: string;
+  source_url: string;
   preview_url: string;
   download_url: string;
 };
@@ -243,7 +244,7 @@ export default function Home() {
     }
   }
 
-  async function startDownload() {
+  async function startDownload(highlightTitles: string[] | null = null) {
     if (!scan) return;
     setMessage("");
     try {
@@ -251,7 +252,7 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({
           target_username: scan.profile.username,
-          highlight_titles: null,
+          highlight_titles: highlightTitles,
         }),
       });
       const ready = await api<Job>(`/jobs/${data.job_id}`);
@@ -375,7 +376,15 @@ export default function Home() {
                   <h3>{activeHighlight.title}</h3>
                   <p>{activeHighlight.item_count} stories in Instagram order</p>
                 </div>
-                <span className="order-note">1 → {activeHighlight.item_count}</span>
+                <div className="story-browser-actions">
+                  <span className="order-note">1 → {activeHighlight.item_count}</span>
+                  <button
+                    type="button"
+                    onClick={() => startDownload([activeHighlight.title])}
+                  >
+                    Download highlight <span>⇩</span>
+                  </button>
+                </div>
               </div>
 
               {storiesLoading ? (
@@ -390,13 +399,17 @@ export default function Home() {
                       <div className="story-media">
                         {story.type === "video" ? (
                           <video
-                            src={story.preview_url}
+                            src={story.source_url}
                             controls
                             preload="metadata"
                           />
                         ) : (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={story.preview_url} alt={`${activeHighlight.title} story ${story.position}`} />
+                          <img
+                            src={story.source_url}
+                            alt={`${activeHighlight.title} story ${story.position}`}
+                            referrerPolicy="no-referrer"
+                          />
                         )}
                         <span className="story-number">{story.position}</span>
                         <span className="story-type">{story.type}</span>
@@ -424,7 +437,7 @@ export default function Home() {
                 </p>
               </div>
             </div>
-            <button type="button" onClick={startDownload} disabled={!scan.highlights.length || job?.status === "downloading"}>
+            <button type="button" onClick={() => startDownload()} disabled={!scan.highlights.length || job?.status === "downloading"}>
               Prepare browser download
               <span>⇩</span>
             </button>

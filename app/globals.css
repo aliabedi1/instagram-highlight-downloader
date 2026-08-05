@@ -556,6 +556,28 @@ h1 em { color: var(--peach); font-weight: 500; }
   font-weight: 800;
 }
 
+.story-browser-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.story-browser-actions button {
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  font-size: .78rem;
+  font-weight: 750;
+  padding: 10px 14px;
+}
+
+.story-browser-actions button span { color: var(--peach); }
+
 .stories-loading {
   min-height: 220px;
   display: flex;

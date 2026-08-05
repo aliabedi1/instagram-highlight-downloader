@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
+import httpx
 import zipstream
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -397,15 +398,23 @@ def register_media(session: BrowserSession, story: dict[str, Any]) -> str:
 
 
 def media_chunks(session: BrowserSession, media_url: str) -> Iterator[bytes]:
-    with session.request_lock:
-        response = session.client.private.get(media_url, stream=True, timeout=60)
-        try:
-            response.raise_for_status()
-            for chunk in response.iter_content(chunk_size=256 * 1024):
-                if chunk:
-                    yield chunk
-        finally:
-            response.close()
+    headers = {
+        "Accept": "*/*",
+        "Referer": "https://www.instagram.com/",
+        "User-Agent": getattr(session.client, "user_agent", None) or "Mozilla/5.0",
+    }
+    timeout = httpx.Timeout(60, connect=15)
+    with httpx.stream(
+        "GET",
+        media_url,
+        headers=headers,
+        follow_redirects=True,
+        timeout=timeout,
+    ) as response:
+        response.raise_for_status()
+        for chunk in response.iter_bytes(chunk_size=256 * 1024):
+            if chunk:
+                yield chunk
 
 
 @app.get("/api/status")
@@ -532,7 +541,8 @@ def scan_highlight_stories(
                 if key != "media_url"
             }
             | {
-                "preview_url": f"http://127.0.0.1:8787/api/media/{token}?download=false",
+                "source_url": story["media_url"],
+                "preview_url": story["media_url"],
                 "download_url": f"http://127.0.0.1:8787/api/media/{token}?download=true",
             }
         )
@@ -687,7 +697,11 @@ def download_story_media(token: str, download: bool = False) -> StreamingRespons
 
     disposition = "attachment" if download else "inline"
     suffix = Path(media["filename"]).suffix.lower()
-    media_type = "video/mp4" if suffix == ".mp4" else "image/jpeg"
+    media_type = {
+        ".mp4": "video/mp4",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }.get(suffix, "image/jpeg")
     return StreamingResponse(
         stream_media(),
         media_type=media_type,
