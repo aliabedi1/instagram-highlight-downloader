@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import ThemeSelector from "./theme-selector";
 
 const API = "http://127.0.0.1:8787/api";
 const SESSION_KEY = "keepsake-browser-session";
@@ -301,7 +302,10 @@ export default function Home() {
           <span className="brand-mark"><InstagramIcon /></span>
           keepsake
         </a>
-        <span className="local-badge"><span /> {viewer ? `Connected @${viewer}` : "Login required"}</span>
+        <div className="nav-actions">
+          <ThemeSelector />
+          <span className="local-badge"><span /> {viewer ? `Connected @${viewer}` : "Login required"}</span>
+        </div>
       </nav>
 
       <section className="hero local-hero">

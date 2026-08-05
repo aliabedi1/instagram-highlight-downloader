@@ -4,6 +4,8 @@ import { headers } from "next/headers";
 import "./globals.css";
 import "./theme.css";
 
+const themeScript = `try{const theme=localStorage.getItem("keepsake-color-theme");if(theme==="light"||theme==="dark")document.documentElement.dataset.theme=theme}catch{}`;
+
 const dmSans = DM_Sans({
   variable: "--font-sans",
   subsets: ["latin"],
@@ -50,7 +52,10 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className={`${dmSans.variable} ${playfair.variable}`}>{children}</body>
     </html>
   );
