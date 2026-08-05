@@ -207,16 +207,20 @@ export default function Home() {
           highlight_id: highlight.id,
         }),
       });
-      setActiveHighlight(data.highlight);
+      const updatedHighlight = {
+        ...data.highlight,
+        cover_url: highlight.cover_url || data.highlight.cover_url,
+      };
+      setActiveHighlight(updatedHighlight);
       setScan((current) => {
         if (!current) return current;
-        const previous = current.highlights.find((item) => item.id === data.highlight.id);
+        const previous = current.highlights.find((item) => item.id === updatedHighlight.id);
         if (!previous) return current;
         return {
           ...current,
-          total_stories: current.total_stories - previous.item_count + data.highlight.item_count,
+          total_stories: current.total_stories - previous.item_count + updatedHighlight.item_count,
           highlights: current.highlights.map((item) => (
-            item.id === data.highlight.id ? data.highlight : item
+            item.id === updatedHighlight.id ? updatedHighlight : item
           )),
         };
       });

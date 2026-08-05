@@ -565,8 +565,12 @@ def hydrate_highlight(session: BrowserSession, highlight: dict[str, Any]) -> Non
             highlight["item_count"] = len(stories)
             highlight["stories_loaded"] = True
             detailed_cover = cover_url(detail)
-            if detailed_cover:
-                highlight["cover_url"] = detailed_cover
+            if detailed_cover and not highlight["cover_url"]:
+                highlight["cover_url"] = proxy_media_url(
+                    session,
+                    detailed_cover,
+                    f"highlight-{highlight['id']}-cover.jpg",
+                )
     except HTTPException:
         raise
     except Exception as exc:
@@ -583,6 +587,13 @@ def register_media(session: BrowserSession, media_url: str, filename: str) -> st
         for stale_token in list(session.media)[:500]:
             session.media.pop(stale_token, None)
     return token
+
+
+def proxy_media_url(session: BrowserSession, media_url: str, filename: str) -> str:
+    if not media_url:
+        return ""
+    token = register_media(session, media_url, filename)
+    return f"http://127.0.0.1:8787/api/media/{token}"
 
 
 def media_chunks(session: BrowserSession, media_url: str) -> Iterator[bytes]:
@@ -698,13 +709,16 @@ def scan_highlights(
     scan = normalize_scan(profile, highlights)
     profile_pic_url = scan["profile"]["profile_pic_url"]
     if profile_pic_url:
-        profile_pic_token = register_media(
+        scan["profile"]["profile_pic_url"] = proxy_media_url(
             session,
             profile_pic_url,
             f"{scan['profile']['username']}-profile.jpg",
         )
-        scan["profile"]["profile_pic_url"] = (
-            f"http://127.0.0.1:8787/api/media/{profile_pic_token}"
+    for highlight in scan["highlights"]:
+        highlight["cover_url"] = proxy_media_url(
+            session,
+            highlight["cover_url"],
+            f"highlight-{highlight['id']}-cover.jpg",
         )
     session.scans[target] = scan
     return public_scan_payload(scan)
