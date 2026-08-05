@@ -335,7 +335,12 @@ export default function Home() {
         <section className="library">
           <div className="profile-row">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={scan.profile.profile_pic_url} alt="" className="profile-photo" />
+            <img
+              src={scan.profile.profile_pic_url}
+              alt=""
+              className="profile-photo"
+              referrerPolicy="no-referrer"
+            />
             <div>
               <span className="result-owner">@{scan.profile.username}</span>
               <h2>{scan.profile.full_name || scan.profile.username}</h2>
@@ -356,7 +361,11 @@ export default function Home() {
                 >
                   <span className="highlight-ring">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={highlight.cover_url} alt="" />
+                    <img
+                      src={highlight.cover_url}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                    />
                     <i>{activeHighlight?.id === highlight.id ? "●" : ""}</i>
                   </span>
                   <strong>{highlight.title}</strong>
