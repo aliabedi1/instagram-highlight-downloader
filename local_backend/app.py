@@ -355,7 +355,7 @@ def extend_unique_highlights(
 
 
 def mobile_highlights_page(
-    client: Client, user_id: str, max_id: str | None = None
+    client: Client, user_id: str, cursor: str | None = None
 ) -> dict[str, Any]:
     params = {
         "supported_capabilities_new": json.dumps(config.SUPPORTED_CAPABILITIES),
@@ -366,8 +366,8 @@ def mobile_highlights_page(
         "is_dark_mode": 0,
         "will_sound_on": 0,
     }
-    if max_id:
-        params["max_id"] = max_id
+    if cursor:
+        params["cursor"] = cursor
     return client.private_request(
         f"highlights/{int(user_id)}/highlights_tray/", params=params
     )
@@ -376,7 +376,8 @@ def mobile_highlights_page(
 def mobile_highlights_cursor(payload: dict[str, Any]) -> str:
     pagination = payload.get("pagination") or {}
     return str(
-        payload.get("next_max_id")
+        payload.get("cursor")
+        or payload.get("next_max_id")
         or payload.get("max_id")
         or pagination.get("next_max_id")
         or pagination.get("end_cursor")
@@ -426,27 +427,30 @@ def all_user_highlights(client: Client, user_id: str) -> list[Any]:
     highlights: list[Any] = []
     seen_ids: set[str] = set()
     seen_cursors: set[str] = set()
-    max_id: str | None = None
+    cursor: str | None = None
     used_mobile_pagination = False
 
     while True:
-        payload = mobile_highlights_page(client, user_id, max_id)
+        payload = mobile_highlights_page(client, user_id, cursor)
         tray = payload.get("tray") or []
+        next_cursor = mobile_highlights_cursor(payload)
         extend_unique_highlights(
             highlights,
             [extract_highlight_v1(item) for item in tray],
             seen_ids,
         )
-        next_max_id = mobile_highlights_cursor(payload)
-        if not next_max_id or next_max_id in seen_cursors:
+        if (
+            payload.get("has_fetched_all_remaining_highlights") is True
+            or not next_cursor
+            or next_cursor in seen_cursors
+        ):
             break
         used_mobile_pagination = True
-        seen_cursors.add(next_max_id)
-        max_id = next_max_id
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
 
-    # Instagram's mobile tray currently stops at 100 items for some profiles
-    # without returning a mobile cursor. Its profile connection exposes the
-    # remaining highlights through standard GraphQL cursor pagination.
+    # Some older mobile responses stop at 100 items without a usable cursor.
+    # Keep the profile connection as a best-effort fallback for that shape.
     if len(highlights) < MOBILE_HIGHLIGHTS_BATCH_LIMIT or used_mobile_pagination:
         return highlights
 
