@@ -12,7 +12,29 @@
 
 * { box-sizing: border-box; }
 
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  scrollbar-color: #b9afb7 var(--paper);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+html::-webkit-scrollbar { width: 12px; }
+html::-webkit-scrollbar-track { background: var(--paper); }
+html::-webkit-scrollbar-thumb {
+  min-height: 72px;
+  background: #b9afb7;
+  background-clip: padding-box;
+  border: 3px solid var(--paper);
+  border-radius: 999px;
+}
+html::-webkit-scrollbar-thumb:hover { background: #968994; background-clip: padding-box; }
+html::-webkit-scrollbar-thumb:active { background: var(--plum); background-clip: padding-box; }
+html::-webkit-scrollbar-button { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
 
 body {
   margin: 0;
