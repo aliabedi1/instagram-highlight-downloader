@@ -28,6 +28,7 @@ from instagrapi.exceptions import (
     TwoFactorRequired,
     UserNotFound,
 )
+from instagrapi.extractors import extract_highlight_v1
 from pydantic import BaseModel, SecretStr
 
 
@@ -35,6 +36,8 @@ USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 SESSION_TTL_SECONDS = 10 * 60
 ARCHIVE_TTL_SECONDS = 30 * 60
 HIGHLIGHTS_PER_PAGE = 20
+MOBILE_HIGHLIGHTS_BATCH_LIMIT = 100
+HIGHLIGHTS_QUERY_ID = "9957820854288654"
 
 
 app = FastAPI(title="Keepsake Local API", version="3.0")
@@ -220,9 +223,11 @@ def story_extension(story: Any, media_url: str) -> str:
 def cover_url(highlight: Any) -> str:
     cover = model_value(highlight, "cover_media")
     cropped = model_value(cover, "cropped_image_version")
+    gql_cropped = model_value(highlight, "cover_media_cropped_thumbnail")
     user = model_value(highlight, "user")
     for candidate in (
         model_value(cropped, "url"),
+        model_value(gql_cropped, "url"),
         model_value(cover, "thumbnail_url"),
         model_value(user, "profile_pic_url"),
     ):
@@ -284,7 +289,10 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
     used_folders: set[str] = set()
 
     for highlight_index, highlight in enumerate(highlights):
-        title = getattr(highlight, "title", "") or f"Highlight {highlight_index + 1}"
+        title = (
+            model_value(highlight, "title", "")
+            or f"Highlight {highlight_index + 1}"
+        )
         base_folder = safe_name(title, f"Highlight {highlight_index + 1}")
         folder = base_folder
         duplicate_index = 2
@@ -298,7 +306,11 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
 
         normalized_highlights.append(
             {
-                "id": str(getattr(highlight, "pk", highlight_index)),
+                "id": str(
+                    model_value(highlight, "pk")
+                    or model_value(highlight, "id")
+                    or highlight_index
+                ).removeprefix("highlight:"),
                 "title": title,
                 "folder_name": folder,
                 "cover_url": cover_url(highlight),
@@ -321,6 +333,150 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
         },
         "highlights": normalized_highlights,
     }
+
+
+def highlight_identity(highlight: Any) -> str:
+    return str(
+        model_value(highlight, "pk")
+        or model_value(highlight, "id")
+        or ""
+    ).removeprefix("highlight:")
+
+
+def extend_unique_highlights(
+    highlights: list[Any], page: list[Any], seen_ids: set[str]
+) -> None:
+    for highlight in page:
+        highlight_id = highlight_identity(highlight)
+        if not highlight_id or highlight_id in seen_ids:
+            continue
+        seen_ids.add(highlight_id)
+        highlights.append(highlight)
+
+
+def mobile_highlights_page(
+    client: Client, user_id: str, max_id: str | None = None
+) -> dict[str, Any]:
+    params = {
+        "supported_capabilities_new": json.dumps(config.SUPPORTED_CAPABILITIES),
+        "phone_id": client.phone_id,
+        "battery_level": 100,
+        "panavision_mode": "",
+        "is_charging": 1,
+        "is_dark_mode": 0,
+        "will_sound_on": 0,
+    }
+    if max_id:
+        params["max_id"] = max_id
+    return client.private_request(
+        f"highlights/{int(user_id)}/highlights_tray/", params=params
+    )
+
+
+def mobile_highlights_cursor(payload: dict[str, Any]) -> str:
+    pagination = payload.get("pagination") or {}
+    return str(
+        payload.get("next_max_id")
+        or payload.get("max_id")
+        or pagination.get("next_max_id")
+        or pagination.get("end_cursor")
+        or ""
+    )
+
+
+def find_highlights_connection(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    for key, child in value.items():
+        if (
+            "highlight" in key.casefold()
+            and isinstance(child, dict)
+            and isinstance(child.get("page_info"), dict)
+            and isinstance(child.get("edges") or child.get("nodes"), list)
+        ):
+            return child
+    for child in value.values():
+        connection = find_highlights_connection(child)
+        if connection:
+            return connection
+    return None
+
+
+def graphql_highlights_page(
+    client: Client, user_id: str, after: str | None = None
+) -> dict[str, Any]:
+    variables: dict[str, Any] = {
+        "user_id": user_id,
+        "first": 50,
+        "include_chaining": False,
+        "include_reel": True,
+        "include_suggested_users": False,
+        "include_logged_out_extras": True,
+        "include_live_status": False,
+        "include_highlight_reels": True,
+    }
+    if after:
+        variables["after"] = after
+    client.inject_sessionid_to_public()
+    data = client.public_graphql_request(variables, query_id=HIGHLIGHTS_QUERY_ID)
+    connection = find_highlights_connection(data)
+    if not connection:
+        raise ValueError("Instagram did not return a highlight connection.")
+    return connection
+
+
+def all_user_highlights(client: Client, user_id: str) -> list[Any]:
+    highlights: list[Any] = []
+    seen_ids: set[str] = set()
+    seen_cursors: set[str] = set()
+    max_id: str | None = None
+    used_mobile_pagination = False
+
+    while True:
+        payload = mobile_highlights_page(client, user_id, max_id)
+        tray = payload.get("tray") or []
+        extend_unique_highlights(
+            highlights,
+            [extract_highlight_v1(item) for item in tray],
+            seen_ids,
+        )
+        next_max_id = mobile_highlights_cursor(payload)
+        if not next_max_id or next_max_id in seen_cursors:
+            break
+        used_mobile_pagination = True
+        seen_cursors.add(next_max_id)
+        max_id = next_max_id
+
+    # Instagram's mobile tray currently stops at 100 items for some profiles
+    # without returning a mobile cursor. Its profile connection exposes the
+    # remaining highlights through standard GraphQL cursor pagination.
+    if len(highlights) < MOBILE_HIGHLIGHTS_BATCH_LIMIT or used_mobile_pagination:
+        return highlights
+
+    graphql_highlights: list[Any] = []
+    graphql_ids: set[str] = set()
+    seen_cursors.clear()
+    after: str | None = None
+    while True:
+        connection = graphql_highlights_page(client, user_id, after)
+        edges = connection.get("edges") or connection.get("nodes") or []
+        nodes = [
+            edge.get("node", edge) if isinstance(edge, dict) else edge
+            for edge in edges
+        ]
+        extend_unique_highlights(graphql_highlights, nodes, graphql_ids)
+        page_info = connection.get("page_info") or {}
+        next_after = str(page_info.get("end_cursor") or "")
+        if (
+            not page_info.get("has_next_page")
+            or not next_after
+            or next_after in seen_cursors
+        ):
+            break
+        seen_cursors.add(next_after)
+        after = next_after
+
+    return graphql_highlights if len(graphql_highlights) > len(highlights) else highlights
 
 
 def public_scan_payload(scan: dict[str, Any], page: int = 1) -> dict[str, Any]:
@@ -532,7 +688,7 @@ def scan_highlights(
     try:
         with session.request_lock:
             profile = session.client.user_info_by_username_v1(target)
-            highlights = session.client.user_highlights(str(profile.pk))
+            highlights = all_user_highlights(session.client, str(profile.pk))
     except Exception as exc:
         raise explain_instagram_error(exc, target) from exc
 
