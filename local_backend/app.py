@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -14,7 +15,7 @@ import zipstream
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from instagrapi import Client
+from instagrapi import Client, config
 from instagrapi.exceptions import (
     BadPassword,
     ChallengeRequired,
@@ -126,6 +127,12 @@ def string_url(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def model_value(value: Any, key: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
 def expire_inactive_sessions() -> None:
     now = time.time()
     with sessions_lock:
@@ -198,23 +205,72 @@ def explain_instagram_error(exc: Exception, target: str = "") -> HTTPException:
 
 
 def story_extension(story: Any, media_url: str) -> str:
-    if getattr(story, "media_type", 1) == 2 or getattr(story, "video_url", None):
+    if model_value(story, "media_type", 1) == 2 or model_value(story, "video_url"):
         return ".mp4"
     suffix = Path(urlparse(media_url).path).suffix.lower()
     return suffix if suffix in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
 
 
 def cover_url(highlight: Any) -> str:
-    cover = getattr(highlight, "cover_media", None)
-    cropped = getattr(cover, "cropped_image_version", None)
+    cover = model_value(highlight, "cover_media")
+    cropped = model_value(cover, "cropped_image_version")
+    user = model_value(highlight, "user")
     for candidate in (
-        getattr(cropped, "url", None),
-        getattr(cover, "thumbnail_url", None),
-        getattr(getattr(highlight, "user", None), "profile_pic_url", None),
+        model_value(cropped, "url"),
+        model_value(cover, "thumbnail_url"),
+        model_value(user, "profile_pic_url"),
     ):
         if candidate:
             return string_url(candidate)
     return ""
+
+
+def largest_media_url(versions: Any) -> str:
+    if not isinstance(versions, list):
+        return ""
+    candidates = [item for item in versions if isinstance(item, dict) and item.get("url")]
+    if not candidates:
+        return ""
+    largest = max(
+        candidates,
+        key=lambda item: (item.get("width") or 0) * (item.get("height") or 0),
+    )
+    return string_url(largest["url"])
+
+
+def story_media_url(story: Any, is_video: bool) -> str:
+    direct_url = model_value(story, "video_url" if is_video else "thumbnail_url")
+    if direct_url:
+        return string_url(direct_url)
+    if is_video:
+        return largest_media_url(model_value(story, "video_versions"))
+    image_versions = model_value(story, "image_versions2", {})
+    return largest_media_url(model_value(image_versions, "candidates", []))
+
+
+def normalize_stories(highlight: Any) -> list[dict[str, Any]]:
+    stories: list[dict[str, Any]] = []
+    for story_index, story in enumerate(
+        model_value(highlight, "items", []) or [], start=1
+    ):
+        is_video = bool(
+            model_value(story, "media_type", 1) == 2
+            or model_value(story, "video_url")
+        )
+        media_url = story_media_url(story, is_video)
+        if not media_url:
+            continue
+        extension = story_extension(story, media_url)
+        stories.append(
+            {
+                "id": str(model_value(story, "pk", story_index)),
+                "position": story_index,
+                "type": "video" if is_video else "image",
+                "filename": f"{story_index}{extension}",
+                "media_url": media_url,
+            }
+        )
+    return stories
 
 
 def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
@@ -231,29 +287,8 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
             duplicate_index += 1
         used_folders.add(folder.casefold())
 
-        stories: list[dict[str, Any]] = []
-        for story_index, story in enumerate(getattr(highlight, "items", []) or [], start=1):
-            is_video = bool(
-                getattr(story, "media_type", 1) == 2
-                or getattr(story, "video_url", None)
-            )
-            media_url = string_url(
-                getattr(story, "video_url", None)
-                if is_video
-                else getattr(story, "thumbnail_url", None)
-            )
-            if not media_url:
-                continue
-            extension = story_extension(story, media_url)
-            stories.append(
-                {
-                    "id": str(getattr(story, "pk", story_index)),
-                    "position": story_index,
-                    "type": "video" if is_video else "image",
-                    "filename": f"{story_index}{extension}",
-                    "media_url": media_url,
-                }
-            )
+        stories = normalize_stories(highlight)
+        reported_count = int(model_value(highlight, "media_count", len(stories)) or 0)
 
         normalized_highlights.append(
             {
@@ -261,9 +296,10 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
                 "title": title,
                 "folder_name": folder,
                 "cover_url": cover_url(highlight),
-                "item_count": len(stories),
+                "item_count": max(reported_count, len(stories)),
                 "position": highlight_index,
                 "stories": stories,
+                "stories_loaded": bool(stories) or reported_count == 0,
             }
         )
 
@@ -285,10 +321,67 @@ def public_scan_payload(scan: dict[str, Any]) -> dict[str, Any]:
     return {
         "profile": dict(scan["profile"]),
         "highlights": [
-            {key: value for key, value in highlight.items() if key not in {"stories", "folder_name"}}
+            {
+                key: value
+                for key, value in highlight.items()
+                if key not in {"stories", "folder_name", "stories_loaded"}
+            }
             for highlight in scan["highlights"]
         ],
     }
+
+
+def raw_highlight_detail(client: Client, highlight_id: str) -> dict[str, Any]:
+    reel_id = f"highlight:{highlight_id}"
+    result = client.private_request(
+        "feed/reels_media/",
+        {
+            "exclude_media_ids": "[]",
+            "supported_capabilities_new": json.dumps(config.SUPPORTED_CAPABILITIES),
+            "source": "profile",
+            "_uid": str(client.user_id),
+            "_uuid": client.uuid,
+            "user_ids": [reel_id],
+        },
+    )
+    reels = result.get("reels", {})
+    if isinstance(reels, dict):
+        detail = reels.get(reel_id)
+    else:
+        detail = next(
+            (
+                reel
+                for reel in reels or []
+                if model_value(reel, "id") == reel_id
+                or str(model_value(reel, "pk", "")) == highlight_id
+            ),
+            None,
+        )
+    if not isinstance(detail, dict):
+        raise HTTPException(status_code=404, detail="That highlight is no longer available.")
+    return detail
+
+
+def hydrate_highlight(session: BrowserSession, highlight: dict[str, Any]) -> None:
+    if highlight["stories_loaded"]:
+        return
+
+    try:
+        with session.request_lock:
+            if highlight["stories_loaded"]:
+                return
+            detail = raw_highlight_detail(session.client, highlight["id"])
+            stories = normalize_stories(detail)
+            highlight["stories"] = stories
+            highlight["item_count"] = len(stories)
+            highlight["stories_loaded"] = True
+            detailed_cover = cover_url(detail)
+            if detailed_cover:
+                highlight["cover_url"] = detailed_cover
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise explain_instagram_error(exc) from exc
 
 
 def register_media(session: BrowserSession, story: dict[str, Any]) -> str:
@@ -428,6 +521,7 @@ def scan_highlight_stories(
     if not highlight:
         raise HTTPException(status_code=404, detail="That highlight was not found.")
 
+    hydrate_highlight(session, highlight)
     stories = []
     for story in highlight["stories"]:
         token = register_media(session, story)
@@ -448,7 +542,7 @@ def scan_highlight_stories(
         "highlight": {
             key: value
             for key, value in highlight.items()
-            if key not in {"stories", "folder_name"}
+            if key not in {"stories", "folder_name", "stories_loaded"}
         },
         "stories": stories,
     }
@@ -471,7 +565,9 @@ def prepare_archive(
         for item in scan["highlights"]
         if not selected or item["title"] in selected
     ]
-    if not highlights:
+    for highlight in highlights:
+        hydrate_highlight(session, highlight)
+    if not highlights or not any(item["stories"] for item in highlights):
         raise HTTPException(status_code=400, detail="There are no stories to download.")
 
     job_id = uuid.uuid4().hex
