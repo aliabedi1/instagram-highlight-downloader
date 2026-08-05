@@ -155,7 +155,7 @@ body {
 .highlight-pagination button:hover:not(:disabled),
 .highlight-pagination button.active,
 .story-browser-actions button,
-.folder-download-control > button,
+.profile-download-control > button,
 .modal-actions .connect,
 .input-shell button,
 .download-all,
@@ -186,15 +186,6 @@ body {
 .profile-photo {
   background: light-dark(#fff, #292229);
   border-color: light-dark(#dba09a, #c27c72);
-}
-
-.profile-ready {
-  color: light-dark(#52705c, #b9dfc5);
-  background: light-dark(#e5f0e8, #21352a);
-}
-
-.profile-ready::before {
-  background: light-dark(#60a276, #70c792);
 }
 
 .select-all {

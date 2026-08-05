@@ -430,7 +430,23 @@ export default function Home() {
               <h2>{scan.profile.full_name || scan.profile.username}</h2>
               <p>{scan.total_highlights} highlights · {scan.total_stories} stories</p>
             </div>
-            <span className="profile-ready">Ready to browse</span>
+            <div className="profile-download-control">
+              <button
+                type="button"
+                onClick={() => startDownload()}
+                disabled={!scan.total_highlights || downloadTarget !== null}
+                aria-busy={downloadTarget === "all"}
+              >
+                {downloadTarget === "all" ? (
+                  <><span className="button-spinner" /> Preparing download…</>
+                ) : (
+                  <>Download all highlights <span aria-hidden="true">⇩</span></>
+                )}
+              </button>
+              {downloadError?.target === "all" && (
+                <p className="download-error" role="alert">{downloadError.message}</p>
+              )}
+            </div>
           </div>
 
           {scan.highlights.length ? (
@@ -593,23 +609,6 @@ export default function Home() {
                   {scan.total_highlights} highlight folders · 1, 2, 3, …
                 </p>
               </div>
-            </div>
-            <div className="folder-download-control">
-              <button
-                type="button"
-                onClick={() => startDownload()}
-                disabled={!scan.total_highlights || downloadTarget !== null}
-                aria-busy={downloadTarget === "all"}
-              >
-                {downloadTarget === "all" ? (
-                  <><span className="button-spinner" /> Preparing download…</>
-                ) : (
-                  <>Download all highlights <span>⇩</span></>
-                )}
-              </button>
-              {downloadError?.target === "all" && (
-                <p className="download-error" role="alert">{downloadError.message}</p>
-              )}
             </div>
           </div>
         </section>
