@@ -360,14 +360,17 @@ export default function Home() {
     }
   }
 
-  async function startDownload(highlightId: string | null = null) {
+  async function startDownload(
+    highlightId: string | null = null,
+    undownloadedOnly = false,
+  ) {
     if (!scan || downloadTarget) return;
     const requestedTarget = highlightId
       ? `highlight:${highlightId}`
       : "all";
 
     setDownloadTarget(requestedTarget);
-    setDownloadProgress("Checking Instagram…");
+    setDownloadProgress(undownloadedOnly ? "Finding missing stories…" : "Checking Instagram…");
     setDownloadError(null);
     setMessage("");
     try {
@@ -376,6 +379,7 @@ export default function Home() {
         body: JSON.stringify({
           target_username: scan.profile.username,
           highlight_id: highlightId,
+          undownloaded_only: undownloadedOnly,
         }),
       });
       let job: DownloadJob;
@@ -540,7 +544,7 @@ export default function Home() {
                 <button
                   type="button"
                   className="sync-button"
-                  onClick={() => startDownload()}
+                  onClick={() => startDownload(null, canContinueDownload)}
                   disabled={(!scan.total_highlights && !scan.profile.has_local) || downloadTarget !== null}
                   aria-busy={downloadTarget === "all"}
                   aria-label={canContinueDownload

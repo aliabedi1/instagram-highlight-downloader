@@ -75,6 +75,7 @@ class HighlightsPageRequest(ScanRequest):
 
 class LibrarySyncRequest(ScanRequest):
     highlight_id: str | None = None
+    undownloaded_only: bool = False
 
 
 @dataclass
@@ -1387,6 +1388,12 @@ def prepare_library_sync(
         item for item in scan["highlights"]
         if not request.highlight_id or item["id"] == request.highlight_id
     ]
+    if request.undownloaded_only and not request.highlight_id:
+        highlights = [
+            item for item in highlights
+            if int(item.get("downloaded_count", 0) or 0)
+            < int(item.get("item_count", 0) or 0)
+        ]
     if request.highlight_id and not highlights:
         raise HTTPException(status_code=404, detail="That highlight was not found.")
 
@@ -1436,7 +1443,13 @@ def prepare_library_sync(
                         refreshed_highlight["cover_url"],
                         f"highlight-{refreshed_highlight['id']}-cover.jpg",
                     )
-                working_highlights = working_scan["highlights"]
+                attach_library_state(working_scan)
+                working_highlights = [
+                    item for item in working_scan["highlights"]
+                    if not request.undownloaded_only
+                    or int(item.get("downloaded_count", 0) or 0)
+                    < int(item.get("item_count", 0) or 0)
+                ]
                 session.scans[target] = working_scan
                 job["total_highlights"] = len(working_highlights)
                 job["total_items"] = sum(
