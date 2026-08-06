@@ -41,7 +41,7 @@ HIGHLIGHTS_QUERY_ID = "9957820854288654"
 LIBRARY_STALE_SECONDS = 24 * 60 * 60
 DOWNLOAD_RETRIES = 5
 MEDIA_CHUNK_SIZE = 256 * 1024
-HIGHLIGHT_DETAILS_BATCH_SIZE = 50
+CONTINUE_HIGHLIGHT_DELAY_SECONDS = 8
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOWNLOAD_ROOT = PROJECT_ROOT / "downloads"
 
@@ -801,12 +801,8 @@ def public_scan_payload(scan: dict[str, Any], page: int = 1) -> dict[str, Any]:
     }
 
 
-def raw_highlight_details(
-    client: Client, highlight_ids: list[str]
-) -> dict[str, dict[str, Any]]:
-    reel_ids = [f"highlight:{highlight_id}" for highlight_id in highlight_ids]
-    if not reel_ids:
-        return {}
+def raw_highlight_detail(client: Client, highlight_id: str) -> dict[str, Any]:
+    reel_id = f"highlight:{highlight_id}"
     result = client.private_request(
         "feed/reels_media/",
         {
@@ -815,30 +811,22 @@ def raw_highlight_details(
             "source": "profile",
             "_uid": str(client.user_id),
             "_uuid": client.uuid,
-            "user_ids": reel_ids,
+            "user_ids": [reel_id],
         },
     )
-    reels = result.get("reels") or result.get("reels_media") or {}
-    details: dict[str, dict[str, Any]] = {}
+    reels = result.get("reels", {})
     if isinstance(reels, dict):
-        candidates = reels.items()
+        detail = reels.get(reel_id)
     else:
-        candidates = ((model_value(reel, "id", ""), reel) for reel in reels or [])
-    for reel_key, detail in candidates:
-        if not isinstance(detail, dict):
-            continue
-        detail_id = str(
-            model_value(detail, "pk", "")
-            or model_value(detail, "id", "")
-            or reel_key
-        ).removeprefix("highlight:")
-        if detail_id:
-            details[detail_id] = detail
-    return details
-
-
-def raw_highlight_detail(client: Client, highlight_id: str) -> dict[str, Any]:
-    detail = raw_highlight_details(client, [highlight_id]).get(highlight_id)
+        detail = next(
+            (
+                reel
+                for reel in reels or []
+                if model_value(reel, "id") == reel_id
+                or str(model_value(reel, "pk", "")) == highlight_id
+            ),
+            None,
+        )
     if not isinstance(detail, dict):
         raise HTTPException(status_code=404, detail="That highlight is no longer available.")
     return detail
@@ -1470,34 +1458,15 @@ def prepare_library_sync(
                 )
 
             account_dir = account_directory(working_scan["profile"], create=True)
-            prefetched_details: dict[str, dict[str, Any]] = {}
-            if request.undownloaded_only:
-                for batch_start in range(
-                    0, len(working_highlights), HIGHLIGHT_DETAILS_BATCH_SIZE
-                ):
-                    batch = working_highlights[
-                        batch_start : batch_start + HIGHLIGHT_DETAILS_BATCH_SIZE
-                    ]
-                    with session.request_lock:
-                        prefetched_details.update(
-                            raw_highlight_details(
-                                session.client,
-                                [str(item["id"]) for item in batch],
-                            )
-                        )
             for index, highlight in enumerate(working_highlights, start=1):
                 job["current_highlight"] = highlight["title"]
+                job["current_story"] = 0
+                job["current_story_total"] = 0
+                if request.undownloaded_only and index > 1:
+                    time.sleep(CONTINUE_HIGHLIGHT_DELAY_SECONDS)
                 try:
-                    if request.undownloaded_only:
-                        detail = prefetched_details.get(str(highlight["id"]))
-                        if not detail:
-                            raise HTTPException(
-                                status_code=404,
-                                detail="Instagram did not return this highlight's stories.",
-                            )
-                    else:
-                        with session.request_lock:
-                            detail = raw_highlight_detail(session.client, highlight["id"])
+                    with session.request_lock:
+                        detail = raw_highlight_detail(session.client, highlight["id"])
                     highlight["title"] = str(
                         model_value(detail, "title", "") or highlight["title"]
                     )
@@ -1519,6 +1488,17 @@ def prepare_library_sync(
                     )
                     reconcile_highlight(session, account_dir, highlight, job)
                 except Exception as exc:
+                    if isinstance(
+                        exc,
+                        (
+                            ChallengeRequired,
+                            ClientThrottledError,
+                            FeedbackRequired,
+                            LoginRequired,
+                            PleaseWaitFewMinutes,
+                        ),
+                    ):
+                        raise
                     detail_message = (
                         str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
                     )
@@ -1550,7 +1530,20 @@ def prepare_library_sync(
             else:
                 job["status"] = "complete"
         except Exception as exc:
-            job["error"] = str(exc)
+            if isinstance(
+                exc,
+                (
+                    ChallengeRequired,
+                    ClientThrottledError,
+                    FeedbackRequired,
+                    LoginRequired,
+                    PleaseWaitFewMinutes,
+                ),
+            ):
+                job["error"] = str(explain_instagram_error(exc, target).detail)
+            else:
+                job["error"] = str(exc)
+            job["completed_at"] = time.time()
             job["status"] = "error"
 
     threading.Thread(target=sync_library, daemon=True).start()
