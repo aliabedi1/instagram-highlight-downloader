@@ -70,6 +70,7 @@ type DownloadJob = {
   downloaded_items: number;
   reused_items: number;
   failed_items: number;
+  errors: string[];
   error: string;
 };
 
@@ -413,6 +414,12 @@ export default function Home() {
         : null;
       if (refreshedActive) await loadStories(refreshedActive, refreshed.profile.username);
       const summary = `${job.downloaded_items} downloaded · ${job.reused_items} already valid`;
+      if (job.status === "partial") {
+        setDownloadError({
+          target: requestedTarget,
+          message: job.errors?.[0] || job.error || "Some missing stories could not be downloaded.",
+        });
+      }
       setMessage(
         job.status === "partial"
           ? `${summary} · ${job.failed_items} failed. Continue the download to retry missing files.`
