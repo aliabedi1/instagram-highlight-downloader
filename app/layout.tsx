@@ -24,7 +24,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const origin = host ? `${protocol}://${host}` : "http://localhost:3000";
   const title = "Keepsake — Local Instagram Highlight Archiver";
   const description =
-    "Stream Instagram highlights into an organized browser-downloaded ZIP without server-side media storage.";
+    "Keep a validated local Instagram highlight library and export saved stories whenever you need them.";
 
   return {
     title,

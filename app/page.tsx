@@ -12,14 +12,27 @@ type Highlight = {
   cover_url: string;
   item_count: number;
   position: number;
+  local_status: "not_downloaded" | "partial" | "current" | "old";
+  downloaded_count: number;
+  removed_count: number;
+  failed_count: number;
+  last_updated_at: string;
+  is_old: boolean;
+  has_local: boolean;
 };
 
 type ScanResult = {
   profile: {
+    id: string;
     username: string;
     full_name: string;
     profile_pic_url: string;
     is_private: boolean;
+    downloaded_stories: number;
+    has_local: boolean;
+    is_old: boolean;
+    old_highlights: number;
+    last_updated_at: string;
   };
   highlights: Highlight[];
   page: number;
@@ -37,6 +50,8 @@ type Story = {
   source_url: string;
   preview_url: string;
   download_url: string;
+  local_available: boolean;
+  taken_at: string;
 };
 
 type StoryResult = {
@@ -45,10 +60,15 @@ type StoryResult = {
 };
 
 type DownloadJob = {
-  status: "preparing" | "complete" | "error";
+  status: "working" | "complete" | "partial" | "error";
   completed_highlights: number;
   total_highlights: number;
   current_highlight: string;
+  current_story: number;
+  current_story_total: number;
+  downloaded_items: number;
+  reused_items: number;
+  failed_items: number;
   error: string;
 };
 
@@ -77,6 +97,21 @@ function FolderIcon() {
       <path d="M3 7.5h7l2-2h9v14H3z" />
     </svg>
   );
+}
+
+function localStatusLabel(highlight: Highlight) {
+  if (highlight.local_status === "partial") {
+    return `${highlight.downloaded_count}/${highlight.item_count} saved`;
+  }
+  if (highlight.local_status === "current") return "Saved locally";
+  if (highlight.local_status === "old") return "Old · update";
+  return "Not downloaded";
+}
+
+function updateActionLabel(highlight?: Highlight) {
+  if (!highlight?.has_local) return "Download stories";
+  if (highlight.local_status === "partial") return "Get missing stories";
+  return "Update highlight";
 }
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -322,22 +357,22 @@ export default function Home() {
     }
   }
 
-  async function startDownload(highlightTitles: string[] | null = null) {
+  async function startDownload(highlightId: string | null = null) {
     if (!scan || downloadTarget) return;
-    const requestedTarget = highlightTitles?.[0]
-      ? `highlight:${highlightTitles[0]}`
+    const requestedTarget = highlightId
+      ? `highlight:${highlightId}`
       : "all";
 
     setDownloadTarget(requestedTarget);
-    setDownloadProgress("Preparing download…");
+    setDownloadProgress("Checking Instagram…");
     setDownloadError(null);
     setMessage("");
     try {
-      const data = await api<{ job_id: string }>("/highlights/download", {
+      const data = await api<{ job_id: string }>("/library/sync", {
         method: "POST",
         body: JSON.stringify({
           target_username: scan.profile.username,
-          highlight_titles: highlightTitles,
+          highlight_id: highlightId,
         }),
       });
       let job: DownloadJob;
@@ -345,33 +380,59 @@ export default function Home() {
         await new Promise((resolve) => window.setTimeout(resolve, 1_000));
         job = await api<DownloadJob>(`/jobs/${data.job_id}`);
         if (job.status === "error") {
-          throw new Error(job.error || "Download could not be prepared.");
+          throw new Error(job.error || "The local library could not be updated.");
         }
-        if (job.status === "preparing") {
+        if (job.status === "working") {
           setDownloadProgress(
-            job.total_highlights > 1
-              ? `Preparing ${job.completed_highlights} of ${job.total_highlights} highlights…`
-              : "Preparing highlight…",
+            job.current_story_total
+              ? `${job.current_story}/${job.current_story_total} · highlight ${job.completed_highlights + 1}/${job.total_highlights}`
+              : job.total_highlights
+                ? `Checking ${job.completed_highlights + 1} of ${job.total_highlights} highlights…`
+                : "Refreshing account…",
           );
         }
-      } while (job.status !== "complete");
+      } while (job.status === "working");
 
-      const downloadLink = document.createElement("a");
-      downloadLink.href = `${API}/jobs/${data.job_id}/archive`;
-      downloadLink.download = "";
-      downloadLink.hidden = true;
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      downloadLink.remove();
+      const refreshed = await api<ScanResult>("/highlights/page", {
+        method: "POST",
+        body: JSON.stringify({
+          target_username: scan.profile.username,
+          page: highlightPage,
+        }),
+      });
+      setScan(refreshed);
+      const refreshedActive = activeHighlight
+        ? refreshed.highlights.find((item) => item.id === activeHighlight.id)
+        : null;
+      if (refreshedActive) await loadStories(refreshedActive, refreshed.profile.username);
+      const summary = `${job.downloaded_items} downloaded · ${job.reused_items} already valid`;
+      setMessage(
+        job.status === "partial"
+          ? `${summary} · ${job.failed_items} failed. Update again to retry missing files.`
+          : `${summary}. Your local library is up to date.`,
+      );
     } catch (error) {
       setDownloadError({
         target: requestedTarget,
-        message: error instanceof Error ? error.message : "Download could not start.",
+        message: error instanceof Error ? error.message : "The local update could not start.",
       });
     } finally {
       setDownloadTarget(null);
       setDownloadProgress("");
     }
+  }
+
+  function exportSaved(highlightId?: string) {
+    if (!scan?.profile.has_local) return;
+    const url = new URL(`${API}/library/${scan.profile.id}/export`);
+    if (highlightId) url.searchParams.set("highlight_id", highlightId);
+    const link = document.createElement("a");
+    link.href = url.toString();
+    link.download = "";
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   }
 
   return (
@@ -457,23 +518,46 @@ export default function Home() {
               referrerPolicy="no-referrer"
             />
             <div>
-              <span className="result-owner">@{scan.profile.username}</span>
+              <div className="profile-kicker-row">
+                <span className="result-owner">@{scan.profile.username}</span>
+                {scan.profile.has_local && (
+                  <span className={`library-state ${scan.profile.is_old ? "is-old" : "is-current"}`}>
+                    {scan.profile.is_old ? `${scan.profile.old_highlights} old` : "Local copy ready"}
+                  </span>
+                )}
+              </div>
               <h2>{scan.profile.full_name || scan.profile.username}</h2>
-              <p>{scan.total_highlights} highlights · {scan.total_stories} stories</p>
+              <p>
+                {scan.total_highlights} highlights · {scan.total_stories} on Instagram
+                {scan.profile.has_local && ` · ${scan.profile.downloaded_stories} saved locally`}
+              </p>
             </div>
             <div className="profile-download-control">
-              <button
-                type="button"
-                onClick={() => startDownload()}
-                disabled={!scan.total_highlights || downloadTarget !== null}
-                aria-busy={downloadTarget === "all"}
-              >
-                {downloadTarget === "all" ? (
-                  <><span className="button-spinner" /> {downloadProgress}</>
-                ) : (
-                  <>Download all highlights <span aria-hidden="true">⇩</span></>
-                )}
-              </button>
+              <div className="profile-actions">
+                <button
+                  type="button"
+                  className="sync-button"
+                  onClick={() => startDownload()}
+                  disabled={(!scan.total_highlights && !scan.profile.has_local) || downloadTarget !== null}
+                  aria-busy={downloadTarget === "all"}
+                >
+                  {downloadTarget === "all" ? (
+                    <><span className="button-spinner" /> {downloadProgress}</>
+                  ) : scan.profile.has_local ? (
+                    <>Update account <span aria-hidden="true">↻</span></>
+                  ) : (
+                    <>Download stories <span aria-hidden="true">↓</span></>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="export-button"
+                  onClick={() => exportSaved()}
+                  disabled={!scan.profile.has_local || downloadTarget !== null}
+                >
+                  Get saved ZIP <span aria-hidden="true">⇩</span>
+                </button>
+              </div>
               {downloadError?.target === "all" && (
                 <p className="download-error" role="alert">{downloadError.message}</p>
               )}
@@ -514,6 +598,9 @@ export default function Home() {
                       </span>
                       <strong>{highlight.title}</strong>
                       <small>{highlight.item_count} stories</small>
+                      <span className={`highlight-state state-${highlight.local_status}`}>
+                        {localStatusLabel(highlight)}
+                      </span>
                     </button>
                   ))}
               </div>
@@ -575,17 +662,27 @@ export default function Home() {
                   <span className="order-note">1 → {activeHighlight.item_count}</span>
                   <button
                     type="button"
-                    onClick={() => startDownload([activeHighlight.title])}
+                    onClick={() => startDownload(activeHighlight.id)}
                     disabled={downloadTarget !== null}
-                    aria-busy={downloadTarget === `highlight:${activeHighlight.title}`}
+                    aria-busy={downloadTarget === `highlight:${activeHighlight.id}`}
                   >
-                    {downloadTarget === `highlight:${activeHighlight.title}` ? (
+                    {downloadTarget === `highlight:${activeHighlight.id}` ? (
                       <><span className="button-spinner" /> {downloadProgress}</>
                     ) : (
-                      <>Download highlight <span>⇩</span></>
+                      <>{updateActionLabel(activeHighlight)} <span>↓</span></>
                     )}
                   </button>
-                  {downloadError?.target === `highlight:${activeHighlight.title}` && (
+                  {activeHighlight.has_local && (
+                    <button
+                      type="button"
+                      className="story-export-button"
+                      onClick={() => exportSaved(activeHighlight.id)}
+                      disabled={downloadTarget !== null}
+                    >
+                      Get ZIP <span>⇩</span>
+                    </button>
+                  )}
+                  {downloadError?.target === `highlight:${activeHighlight.id}` && (
                     <p className="download-error" role="alert">{downloadError.message}</p>
                   )}
                 </div>
@@ -619,10 +716,14 @@ export default function Home() {
                         <span className="story-type">{story.type}</span>
                       </div>
                       <div className="story-card-foot">
-                        <span>{story.filename}</span>
-                        <a href={story.download_url} download={story.filename}>
-                          Download <b>↓</b>
-                        </a>
+                        <span title={story.filename}>{story.filename}</span>
+                        {story.local_available ? (
+                          <a href={story.download_url} download={story.filename}>
+                            Get file <b>↓</b>
+                          </a>
+                        ) : (
+                          <em>Not saved</em>
+                        )}
                       </div>
                     </article>
                   ))}
@@ -637,7 +738,7 @@ export default function Home() {
               <div>
                 <strong>{scan.profile.username}/</strong>
                 <p>
-                  {scan.total_highlights} highlight folders · 1, 2, 3, …
+                  {scan.profile.downloaded_stories} saved files · ordered, timestamped, ID-matched
                 </p>
               </div>
             </div>
@@ -648,18 +749,16 @@ export default function Home() {
       <section className="structure-section">
         <div>
           <span className="section-number">THE OUTPUT</span>
-          <h2>Your archive,<br />already organized.</h2>
-          <p>Highlight names and story order are preserved inside the browser download. Nothing is kept in a server download folder.</p>
+          <h2>Your library,<br />safe between updates.</h2>
+          <p>Stories are validated and kept inside the project’s downloads folder. Updates match Instagram IDs, preserve order, and fetch only missing or invalid files.</p>
         </div>
-        <pre aria-label="Example ZIP structure">{`username-highlights.zip
-└── username/
-    ├── Travel/
-    │   ├── 1.jpg
-    │   ├── 2.mp4
-    │   └── 3.jpg
-    └── Behind the scenes/
-        ├── 1.mp4
-        └── 2.jpg`}</pre>
+        <pre aria-label="Example local library structure">{`downloads/
+└── username__ig_123/
+    └── highlights/
+        └── 001__Travel__ig_456/
+            └── current/
+                ├── 0001__20260806T091425Z__ig_789.jpg
+                └── 0002__20260806T094102Z__ig_790.mp4`}</pre>
       </section>
 
       {loginOpen && (
@@ -733,7 +832,7 @@ export default function Home() {
       <footer>
         <a className="brand footer-brand" href="#"><span className="brand-mark"><InstagramIcon /></span>keepsake</a>
         <p>For personal use and content you have permission to save.</p>
-        <span>Browser download · no server archive</span>
+        <span>Persistent local library · ZIP on demand</span>
       </footer>
     </main>
   );

@@ -155,7 +155,7 @@ body {
 .highlight-pagination button:hover:not(:disabled),
 .highlight-pagination button.active,
 .story-browser-actions button,
-.profile-download-control > button,
+.profile-actions .sync-button,
 .modal-actions .connect,
 .input-shell button,
 .download-all,
@@ -208,6 +208,29 @@ body {
   border-color: light-dark(#f0e9ee, #211a21);
 }
 
+.library-state,
+.highlight-state,
+.profile-actions .export-button {
+  background: light-dark(#fffdfb, #302730);
+  border-color: light-dark(#d4c7d0, #51434f);
+}
+
+.library-state.is-old,
+.state-old {
+  color: light-dark(#7e522c, #f2c28d);
+  background: light-dark(#fff0dc, #3c2c1e);
+}
+
+.state-not_downloaded {
+  color: light-dark(#786f78, #c4b9c1);
+  background: light-dark(#e8e0e6, #352d34);
+}
+
+.state-partial {
+  color: light-dark(#8a4d46, #ffc0b7);
+  background: light-dark(#ffebe6, #492724);
+}
+
 .highlight-pagination button {
   color: light-dark(#5d2d63, #e4b8e1);
   background: light-dark(#fffdfb, #292229);
@@ -225,6 +248,11 @@ body {
 
 .order-note {
   color: light-dark(#8a627d, #dfb1d8);
+  background: light-dark(#f1e9f0, #3a2c39);
+}
+
+.story-browser-actions .story-export-button {
+  color: light-dark(#5d2d63, #e4b8e1);
   background: light-dark(#f1e9f0, #3a2c39);
 }
 

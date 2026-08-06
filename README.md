@@ -2,8 +2,8 @@
 
 Keepsake is a local Instagram highlight downloader for Windows and Linux.
 Connect an Instagram account, paste a profile link, browse its highlight
-stories in Instagram order, and download one story, one highlight, or the
-complete collection as a ZIP.
+stories in Instagram order, and maintain a validated local copy that can be
+exported as a ZIP whenever needed.
 
 ## Requirements
 
@@ -75,19 +75,25 @@ to stop Keepsake.
    prompted.
 4. Paste the target profile link and choose **Show highlights**.
 5. Select a highlight to browse its stories.
-6. Download an individual story, a single highlight, or the complete ZIP.
+6. Choose **Download stories** to create the local copy.
+7. Use **Update account** or **Update highlight** later to retrieve only files
+   that are new, missing, or invalid.
+8. Choose **Get saved ZIP** to export files that already exist locally.
 
-The complete download has this structure:
+The persistent local library has this structure:
 
 ```text
-username-highlights-YYYYMMDD-HHMMSS.zip
-└── username/
-    ├── Highlight name/
-    │   ├── 1.jpg
-    │   ├── 2.mp4
-    │   └── 3.jpg
-    └── Another highlight/
-        └── 1.jpg
+downloads/
+└── username__ig_123/
+    ├── account.json
+    └── highlights/
+        └── 001__Highlight name__ig_456/
+            ├── manifest.json
+            ├── current/
+            │   ├── 0001__20260806T091425Z__ig_789.jpg
+            │   └── 0002__20260806T094102Z__ig_790.mp4
+            ├── removed/
+            └── corrupt/
 ```
 
 ## How it works
@@ -105,17 +111,30 @@ session. Opening stories or preparing a ZIP reuses that scan instead of
 repeating the profile and highlight lookup, reducing duplicate requests that
 could trigger immediate `429` responses.
 
-When a download begins, the backend fetches each media item and streams it into
-the browser download. The media files and generated archive are not saved in a
-project or server-side download directory.
+When an update begins, the backend compares Instagram media IDs with the local
+manifest. Valid existing files are reused, reordered files are renamed without
+being downloaded again, and missing or invalid files are fetched with automatic
+retries and partial-file resume support. Media removed from Instagram is kept in
+the highlight's `removed/` directory rather than deleted.
+
+The filename contains the current Instagram position, the story timestamp in
+UTC, and the stable Instagram media ID. Position preserves visible order while
+the ID lets later updates recognize the same story even if its position changes.
+ZIP exports are generated only from validated local files and do not contact
+Instagram.
+
+A downloaded highlight is marked **Old** when it has not been checked for 24
+hours. The badge indicates that an update is recommended; it does not mean the
+remote highlight definitely changed.
 
 ### Session and credential handling
 
 Instagram credentials are handled only by the local backend. The password is
 discarded immediately after login. Authenticated client data, cached profile
-data, media links, and ZIP links remain in memory only and are removed when you
-disconnect or after the browser stops sending its heartbeat. Nothing is
-written to `.sessions/` or `downloads/`.
+data and temporary Instagram media links remain in memory only and are removed
+when you disconnect or after the browser stops sending its heartbeat. Downloaded
+media and non-sensitive library manifests persist under `downloads/`. Login
+credentials and authenticated session data are never written there.
 
 ## Notes
 

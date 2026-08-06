@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
 import httpx
 import zipstream
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from instagrapi import Client, config
 from instagrapi.exceptions import (
     BadPassword,
@@ -34,13 +35,17 @@ from pydantic import BaseModel, SecretStr
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 SESSION_TTL_SECONDS = 10 * 60
-ARCHIVE_TTL_SECONDS = 30 * 60
 HIGHLIGHTS_PER_PAGE = 20
 MOBILE_HIGHLIGHTS_BATCH_LIMIT = 100
 HIGHLIGHTS_QUERY_ID = "9957820854288654"
+LIBRARY_STALE_SECONDS = 24 * 60 * 60
+DOWNLOAD_RETRIES = 5
+MEDIA_CHUNK_SIZE = 256 * 1024
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DOWNLOAD_ROOT = PROJECT_ROOT / "downloads"
 
 
-app = FastAPI(title="Keepsake Local API", version="3.0")
+app = FastAPI(title="Keepsake Local API", version="4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -68,8 +73,8 @@ class HighlightsPageRequest(ScanRequest):
     page: int
 
 
-class DownloadRequest(ScanRequest):
-    highlight_titles: list[str] | None = None
+class LibrarySyncRequest(ScanRequest):
+    highlight_id: str | None = None
 
 
 @dataclass
@@ -81,7 +86,7 @@ class BrowserSession:
     last_seen: float = field(default_factory=time.time)
     scans: dict[str, dict[str, Any]] = field(default_factory=dict)
     media: dict[str, dict[str, str]] = field(default_factory=dict)
-    archives: dict[str, dict[str, Any]] = field(default_factory=dict)
+    jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
     request_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -129,7 +134,15 @@ def clean_target(value: str) -> str:
 def safe_name(value: str, fallback: str, limit: int = 100) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", value).strip().rstrip(".")
     cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned[:limit] or fallback
+    cleaned = cleaned[:limit] or fallback
+    reserved = {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+    }
+    if cleaned.split(".", 1)[0].upper() in reserved:
+        cleaned = f"_{cleaned}"
+    return cleaned
 
 
 def string_url(value: Any) -> str:
@@ -140,6 +153,46 @@ def model_value(value: Any, key: str, default: Any = None) -> Any:
     if isinstance(value, dict):
         return value.get(key, default)
     return getattr(value, key, default)
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, (int, float)):
+        parsed = datetime.fromtimestamp(value, tz=timezone.utc)
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def story_taken_at(story: Any) -> tuple[str, str]:
+    parsed = parse_utc(
+        model_value(story, "taken_at")
+        or model_value(story, "taken_at_timestamp")
+        or model_value(story, "created_at")
+    )
+    if not parsed:
+        return "", "unknown-time"
+    return (
+        parsed.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        parsed.strftime("%Y%m%dT%H%M%SZ"),
+    )
+
+
+def is_stale(value: Any) -> bool:
+    parsed = parse_utc(value)
+    return not parsed or (datetime.now(timezone.utc) - parsed).total_seconds() > LIBRARY_STALE_SECONDS
 
 
 def expire_inactive_sessions() -> None:
@@ -272,12 +325,17 @@ def normalize_stories(highlight: Any) -> list[dict[str, Any]]:
         if not media_url:
             continue
         extension = story_extension(story, media_url)
+        story_id = str(model_value(story, "pk", story_index))
+        taken_at, timestamp_name = story_taken_at(story)
         stories.append(
             {
-                "id": str(model_value(story, "pk", story_index)),
+                "id": story_id,
                 "position": story_index,
                 "type": "video" if is_video else "image",
-                "filename": f"{story_index}{extension}",
+                "taken_at": taken_at,
+                "filename": (
+                    f"{story_index:04d}__{timestamp_name}__ig_{story_id}{extension}"
+                ),
                 "media_url": media_url,
             }
         )
@@ -323,6 +381,7 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
 
     return {
         "profile": {
+            "id": str(getattr(profile, "pk", "")),
             "username": str(getattr(profile, "username", "")),
             "full_name": str(getattr(profile, "full_name", "") or ""),
             "profile_pic_url": string_url(
@@ -333,6 +392,220 @@ def normalize_scan(profile: Any, highlights: list[Any]) -> dict[str, Any]:
         },
         "highlights": normalized_highlights,
     }
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def account_folder_name(profile: dict[str, Any]) -> str:
+    username = safe_name(profile.get("username", ""), "instagram", 30)
+    user_id = safe_name(str(profile.get("id", "")), "unknown", 40)
+    return f"{username}__ig_{user_id}"
+
+
+def find_account_directory(user_id: str) -> Path | None:
+    if not DOWNLOAD_ROOT.exists():
+        return None
+    for directory in DOWNLOAD_ROOT.iterdir():
+        if not directory.is_dir():
+            continue
+        manifest = read_json(directory / "account.json")
+        if str((manifest.get("profile") or {}).get("id", "")) == str(user_id):
+            return directory
+    return None
+
+
+def account_directory(profile: dict[str, Any], *, create: bool = False) -> Path:
+    DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+    existing = find_account_directory(str(profile.get("id", "")))
+    desired = DOWNLOAD_ROOT / account_folder_name(profile)
+    if existing and create and existing != desired and not desired.exists():
+        existing.rename(desired)
+        existing = desired
+    directory = existing or desired
+    if create:
+        (directory / "highlights").mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def highlight_folder_name(highlight: dict[str, Any]) -> str:
+    title = safe_name(
+        str(highlight.get("title", "")),
+        f"Highlight {int(highlight.get('position', 0)) + 1}",
+        24,
+    )
+    return (
+        f"{int(highlight.get('position', 0)) + 1:03d}__{title}"
+        f"__ig_{safe_name(str(highlight.get('id', '')), 'unknown', 50)}"
+    )
+
+
+def find_highlight_directory(account_dir: Path, highlight_id: str) -> Path | None:
+    parent = account_dir / "highlights"
+    if not parent.exists():
+        return None
+    for directory in parent.iterdir():
+        if not directory.is_dir():
+            continue
+        manifest = read_json(directory / "manifest.json")
+        if str(manifest.get("id", "")) == str(highlight_id):
+            return directory
+    return None
+
+
+def highlight_directory(
+    account_dir: Path, highlight: dict[str, Any], *, create: bool = False
+) -> Path:
+    parent = account_dir / "highlights"
+    existing = find_highlight_directory(account_dir, str(highlight["id"]))
+    desired = parent / highlight_folder_name(highlight)
+    if existing and create and existing != desired and not desired.exists():
+        existing.rename(desired)
+        existing = desired
+    directory = existing or desired
+    if create:
+        for child in ("current", "removed", "corrupt"):
+            (directory / child).mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def media_signature_is_valid(path: Path) -> bool:
+    try:
+        if path.stat().st_size <= 0:
+            return False
+        with path.open("rb") as source:
+            header = source.read(16)
+    except OSError:
+        return False
+    return bool(
+        header.startswith(b"\xff\xd8\xff")
+        or header.startswith(b"\x89PNG\r\n\x1a\n")
+        or (header.startswith(b"RIFF") and header[8:12] == b"WEBP")
+        or (len(header) >= 12 and header[4:8] == b"ftyp")
+    )
+
+
+def local_record_path(highlight_dir: Path, record: dict[str, Any]) -> Path | None:
+    relative = str(record.get("local_path", ""))
+    if not relative:
+        return None
+    candidate = (highlight_dir / relative).resolve()
+    try:
+        candidate.relative_to(highlight_dir.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def record_file_is_valid(highlight_dir: Path, record: dict[str, Any]) -> bool:
+    path = local_record_path(highlight_dir, record)
+    if not path or not path.is_file() or not media_signature_is_valid(path):
+        return False
+    expected_size = int(record.get("size", 0) or 0)
+    return not expected_size or path.stat().st_size == expected_size
+
+
+def candidate_file_is_valid(path: Path, record: dict[str, Any] | None) -> bool:
+    if not path.is_file() or not media_signature_is_valid(path):
+        return False
+    expected_size = int((record or {}).get("size", 0) or 0)
+    if expected_size and path.stat().st_size != expected_size:
+        return False
+    expected_checksum = str((record or {}).get("sha256", ""))
+    return not expected_checksum or sha256_file(path) == expected_checksum
+
+
+def highlight_library_state(
+    account_dir: Path, highlight: dict[str, Any]
+) -> dict[str, Any]:
+    directory = find_highlight_directory(account_dir, str(highlight["id"]))
+    manifest = read_json(directory / "manifest.json") if directory else {}
+    records = manifest.get("stories") or []
+    current_records = [
+        record for record in records
+        if isinstance(record, dict) and not record.get("removed_from_instagram")
+    ]
+    removed_records = [
+        record for record in records
+        if isinstance(record, dict) and record.get("removed_from_instagram")
+    ]
+    downloaded = sum(
+        record_file_is_valid(directory, record) for record in current_records
+    ) if directory else 0
+    removed = sum(
+        record_file_is_valid(directory, record) for record in removed_records
+    ) if directory else 0
+    failed = sum(bool(record.get("error")) for record in current_records)
+    checked_at = manifest.get("last_checked_at", "")
+    old = bool(downloaded or removed) and is_stale(checked_at)
+    remote_count = int(highlight.get("item_count", 0) or 0)
+    if not downloaded and not removed:
+        status = "not_downloaded"
+    elif downloaded < remote_count:
+        status = "partial"
+    elif old:
+        status = "old"
+    else:
+        status = "current"
+    return {
+        "local_status": status,
+        "downloaded_count": downloaded,
+        "removed_count": removed,
+        "failed_count": failed,
+        "last_updated_at": checked_at,
+        "is_old": old,
+        "has_local": bool(downloaded or removed),
+    }
+
+
+def attach_library_state(scan: dict[str, Any]) -> None:
+    account_dir = account_directory(scan["profile"])
+    saved_total = 0
+    old_highlights = 0
+    latest_update = ""
+    for highlight in scan["highlights"]:
+        state = highlight_library_state(account_dir, highlight)
+        highlight.update(state)
+        saved_total += state["downloaded_count"] + state["removed_count"]
+        old_highlights += int(state["is_old"])
+        latest_update = max(latest_update, str(state["last_updated_at"]))
+    remote_ids = {str(highlight["id"]) for highlight in scan["highlights"]}
+    highlights_root = account_dir / "highlights"
+    for directory in highlights_root.iterdir() if highlights_root.exists() else []:
+        if not directory.is_dir():
+            continue
+        manifest = read_json(directory / "manifest.json")
+        if str(manifest.get("id", "")) in remote_ids:
+            continue
+        saved_total += sum(
+            record_file_is_valid(directory, record)
+            for record in manifest.get("stories") or []
+            if isinstance(record, dict)
+        )
+    scan["profile"].update(
+        {
+            "downloaded_stories": saved_total,
+            "has_local": saved_total > 0,
+            "is_old": old_highlights > 0,
+            "old_highlights": old_highlights,
+            "last_updated_at": latest_update,
+        }
+    )
 
 
 def highlight_identity(highlight: Any) -> str:
@@ -611,9 +884,289 @@ def media_chunks(session: BrowserSession, media_url: str) -> Iterator[bytes]:
         timeout=timeout,
     ) as response:
         response.raise_for_status()
-        for chunk in response.iter_bytes(chunk_size=256 * 1024):
+        for chunk in response.iter_bytes(chunk_size=MEDIA_CHUNK_SIZE):
             if chunk:
                 yield chunk
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(MEDIA_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def quarantine_file(highlight_dir: Path, path: Path) -> None:
+    if not path.exists():
+        return
+    destination = highlight_dir / "corrupt" / f"{path.stem}__{uuid.uuid4().hex[:8]}{path.suffix}"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    path.replace(destination)
+
+
+def find_story_candidate(
+    highlight_dir: Path, story_id: str, old_record: dict[str, Any] | None
+) -> Path | None:
+    if old_record:
+        recorded = local_record_path(highlight_dir, old_record)
+        if recorded and recorded.is_file():
+            return recorded
+    pattern = f"*__ig_{story_id}.*"
+    for child in ("current", "removed"):
+        for candidate in (highlight_dir / child).glob(pattern):
+            if candidate.is_file() and not candidate.name.startswith("."):
+                return candidate
+    return None
+
+
+def download_media_file(
+    session: BrowserSession, media_url: str, destination: Path
+) -> tuple[int, str]:
+    partial = destination.with_name(f".{destination.name}.part")
+    headers = {
+        "Accept": "*/*",
+        "Referer": "https://www.instagram.com/",
+        "User-Agent": getattr(session.client, "user_agent", None) or "Mozilla/5.0",
+    }
+    timeout = httpx.Timeout(120, connect=20)
+    last_error: Exception | None = None
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    for attempt in range(DOWNLOAD_RETRIES):
+        try:
+            offset = partial.stat().st_size if partial.exists() else 0
+            request_headers = dict(headers)
+            if offset:
+                request_headers["Range"] = f"bytes={offset}-"
+            with httpx.stream(
+                "GET",
+                media_url,
+                headers=request_headers,
+                follow_redirects=True,
+                timeout=timeout,
+            ) as response:
+                if response.status_code == 416 and offset:
+                    content_range = response.headers.get("Content-Range", "")
+                    range_total = content_range.rsplit("/", 1)[-1]
+                    remote_size = (
+                        int(range_total)
+                        if "/" in content_range and range_total.isdigit()
+                        else 0
+                    )
+                    if remote_size == offset and media_signature_is_valid(partial):
+                        partial.replace(destination)
+                        return destination.stat().st_size, sha256_file(destination)
+                    partial.unlink(missing_ok=True)
+                response.raise_for_status()
+                content_range = response.headers.get("Content-Range", "")
+                append = (
+                    offset > 0
+                    and response.status_code == 206
+                    and content_range.startswith(f"bytes {offset}-")
+                )
+                if offset and response.status_code == 206 and not append:
+                    partial.unlink(missing_ok=True)
+                    raise ValueError("Instagram returned an unexpected resume range.")
+                mode = "ab" if append else "wb"
+                with partial.open(mode) as output:
+                    for chunk in response.iter_bytes(chunk_size=MEDIA_CHUNK_SIZE):
+                        if chunk:
+                            output.write(chunk)
+                expected_size = 0
+                if response.status_code == 206 and "/" in content_range:
+                    total = content_range.rsplit("/", 1)[-1]
+                    expected_size = int(total) if total.isdigit() else 0
+                elif response.headers.get("Content-Length", "").isdigit():
+                    expected_size = int(response.headers["Content-Length"])
+                if expected_size and partial.stat().st_size != expected_size:
+                    raise ValueError(
+                        f"Instagram sent {partial.stat().st_size} of {expected_size} bytes."
+                    )
+            if not media_signature_is_valid(partial):
+                partial.unlink(missing_ok=True)
+                raise ValueError("Instagram returned an invalid or incomplete media file.")
+            if destination.exists():
+                destination.unlink()
+            partial.replace(destination)
+            return destination.stat().st_size, sha256_file(destination)
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < DOWNLOAD_RETRIES:
+                time.sleep(min(2 ** attempt, 8))
+
+    raise RuntimeError(
+        f"Media download failed after {DOWNLOAD_RETRIES} attempts: {last_error}"
+    )
+
+
+def save_highlight_manifest(
+    path: Path,
+    highlight: dict[str, Any],
+    stories: list[dict[str, Any]],
+    checked_at: str,
+) -> None:
+    write_json(
+        path,
+        {
+            "version": 1,
+            "id": highlight["id"],
+            "title": highlight["title"],
+            "position": highlight["position"],
+            "last_checked_at": checked_at,
+            "remote_story_count": len(highlight["stories"]),
+            "stories": stories,
+        },
+    )
+
+
+def reconcile_highlight(
+    session: BrowserSession,
+    account_dir: Path,
+    highlight: dict[str, Any],
+    job: dict[str, Any],
+) -> None:
+    directory = highlight_directory(account_dir, highlight, create=True)
+    manifest_path = directory / "manifest.json"
+    previous = read_json(manifest_path)
+    old_records = {
+        str(record.get("id", "")): record
+        for record in previous.get("stories") or []
+        if isinstance(record, dict) and record.get("id")
+    }
+    remote_ids = {str(story["id"]) for story in highlight["stories"]}
+    checked_at = utc_now()
+    reconciled: list[dict[str, Any]] = []
+
+    for old_id, old_record in old_records.items():
+        if old_id in remote_ids:
+            continue
+        candidate = find_story_candidate(directory, old_id, old_record)
+        if candidate and candidate_file_is_valid(candidate, old_record):
+            destination = directory / "removed" / candidate.name
+            if candidate != destination:
+                if destination.exists():
+                    destination = destination.with_name(
+                        f"{destination.stem}__{uuid.uuid4().hex[:8]}{destination.suffix}"
+                    )
+                candidate.replace(destination)
+            removed_record = dict(old_record)
+            removed_record.update(
+                {
+                    "local_path": destination.relative_to(directory).as_posix(),
+                    "removed_from_instagram": True,
+                    "removed_at": checked_at,
+                    "error": "",
+                }
+            )
+            reconciled.append(removed_record)
+
+    for story in highlight["stories"]:
+        story_id = str(story["id"])
+        old_record = old_records.get(story_id)
+        destination = directory / "current" / story["filename"]
+        candidate = find_story_candidate(directory, story_id, old_record)
+        record = {
+            "id": story_id,
+            "position": story["position"],
+            "taken_at": story["taken_at"],
+            "type": story["type"],
+            "filename": story["filename"],
+            "local_path": f"current/{story['filename']}",
+            "removed_from_instagram": False,
+            "downloaded_at": (old_record or {}).get("downloaded_at", ""),
+            "size": int((old_record or {}).get("size", 0) or 0),
+            "sha256": (old_record or {}).get("sha256", ""),
+            "error": "",
+        }
+        job["current_story"] = story["position"]
+        job["current_story_total"] = len(highlight["stories"])
+
+        if candidate and candidate_file_is_valid(candidate, old_record):
+            if candidate != destination:
+                if destination.exists() and not media_signature_is_valid(destination):
+                    quarantine_file(directory, destination)
+                candidate.replace(destination)
+            record["size"] = destination.stat().st_size
+            record["sha256"] = record["sha256"] or sha256_file(destination)
+            record["downloaded_at"] = record["downloaded_at"] or checked_at
+            job["reused_items"] += 1
+        elif destination.exists() and media_signature_is_valid(destination):
+            record["size"] = destination.stat().st_size
+            record["sha256"] = sha256_file(destination)
+            record["downloaded_at"] = record["downloaded_at"] or checked_at
+            job["reused_items"] += 1
+        else:
+            if candidate and candidate.exists():
+                quarantine_file(directory, candidate)
+            if destination.exists():
+                quarantine_file(directory, destination)
+            try:
+                size, checksum = download_media_file(
+                    session, story["media_url"], destination
+                )
+                record.update(
+                    {
+                        "size": size,
+                        "sha256": checksum,
+                        "downloaded_at": checked_at,
+                    }
+                )
+                job["downloaded_items"] += 1
+            except Exception as exc:
+                record["error"] = str(exc)
+                job["failed_items"] += 1
+                job["errors"].append(
+                    f"{highlight['title']} story {story['position']}: {exc}"
+                )
+        reconciled.append(record)
+        job["processed_items"] += 1
+        save_highlight_manifest(manifest_path, highlight, reconciled, checked_at)
+
+    save_highlight_manifest(manifest_path, highlight, reconciled, checked_at)
+
+
+def save_account_manifest(
+    account_dir: Path, scan: dict[str, Any], *, full_sync: bool
+) -> None:
+    path = account_dir / "account.json"
+    previous = read_json(path)
+    previous_highlights = {
+        str(item.get("id", "")): item
+        for item in previous.get("highlights") or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    current_ids: set[str] = set()
+    highlights: list[dict[str, Any]] = []
+    for highlight in scan["highlights"]:
+        highlight_id = str(highlight["id"])
+        current_ids.add(highlight_id)
+        directory = find_highlight_directory(account_dir, highlight_id)
+        highlights.append(
+            {
+                "id": highlight_id,
+                "title": highlight["title"],
+                "position": highlight["position"],
+                "directory": directory.name if directory else "",
+                "available_on_instagram": True,
+            }
+        )
+    for highlight_id, item in previous_highlights.items():
+        if highlight_id not in current_ids:
+            removed = dict(item)
+            if full_sync:
+                removed["available_on_instagram"] = False
+                removed["removed_at"] = utc_now()
+            highlights.append(removed)
+    write_json(
+        path,
+        {
+            "version": 1,
+            "profile": dict(scan["profile"]),
+            "last_checked_at": utc_now() if full_sync else previous.get("last_checked_at", ""),
+            "highlights": highlights,
+        },
+    )
 
 
 @app.get("/api/status")
@@ -720,6 +1273,7 @@ def scan_highlights(
             highlight["cover_url"],
             f"highlight-{highlight['id']}-cover.jpg",
         )
+    attach_library_state(scan)
     session.scans[target] = scan
     return public_scan_payload(scan)
 
@@ -734,6 +1288,7 @@ def scan_highlights_page(
     scan = session.scans.get(target)
     if not scan:
         raise HTTPException(status_code=409, detail="Scan this profile again first.")
+    attach_library_state(scan)
     return public_scan_payload(scan, request.page)
 
 
@@ -756,9 +1311,31 @@ def scan_highlight_stories(
         raise HTTPException(status_code=404, detail="That highlight was not found.")
 
     hydrate_highlight(session, highlight)
+    highlight.update(highlight_library_state(account_directory(scan["profile"]), highlight))
+    account_dir = account_directory(scan["profile"])
+    local_highlight_dir = find_highlight_directory(account_dir, highlight["id"])
+    local_manifest = (
+        read_json(local_highlight_dir / "manifest.json")
+        if local_highlight_dir else {}
+    )
+    local_records = {
+        str(record.get("id", "")): record
+        for record in local_manifest.get("stories") or []
+        if isinstance(record, dict) and not record.get("removed_from_instagram")
+    }
     stories = []
     for story in highlight["stories"]:
-        token = register_media(session, story["media_url"], story["filename"])
+        local_record = local_records.get(str(story["id"]))
+        local_available = bool(
+            local_highlight_dir
+            and local_record
+            and record_file_is_valid(local_highlight_dir, local_record)
+        )
+        local_url = (
+            f"http://127.0.0.1:8787/api/library/media/"
+            f"{scan['profile']['id']}/{highlight['id']}/{story['id']}"
+            if local_available else ""
+        )
         stories.append(
             {
                 key: value
@@ -766,9 +1343,10 @@ def scan_highlight_stories(
                 if key != "media_url"
             }
             | {
-                "source_url": story["media_url"],
-                "preview_url": story["media_url"],
-                "download_url": f"http://127.0.0.1:8787/api/media/{token}?download=true",
+                "source_url": local_url or story["media_url"],
+                "preview_url": local_url or story["media_url"],
+                "download_url": f"{local_url}?download=true" if local_url else "",
+                "local_available": local_available,
             }
         )
 
@@ -783,72 +1361,144 @@ def scan_highlight_stories(
     }
 
 
-@app.post("/api/highlights/download", status_code=202)
-def prepare_archive(
-    request: DownloadRequest,
+@app.post("/api/library/sync", status_code=202)
+def prepare_library_sync(
+    request: LibrarySyncRequest,
     session_token: str | None = Header(default=None, alias="X-Keepsake-Session"),
 ) -> dict[str, str]:
     session = get_session(session_token)
     target = clean_target(request.target_username)
     scan = session.scans.get(target)
     if not scan:
-        raise HTTPException(status_code=409, detail="Scan this profile again first.")
+        raise HTTPException(status_code=409, detail="Show this profile again first.")
+    if any(job.get("status") == "working" for job in session.jobs.values()):
+        raise HTTPException(
+            status_code=409,
+            detail="Another local library update is already running in this session.",
+        )
 
-    selected = set(request.highlight_titles or [])
     highlights = [
-        item
-        for item in scan["highlights"]
-        if not selected or item["title"] in selected
+        item for item in scan["highlights"]
+        if not request.highlight_id or item["id"] == request.highlight_id
     ]
-    if not highlights:
-        raise HTTPException(status_code=400, detail="There are no stories to download.")
+    if request.highlight_id and not highlights:
+        raise HTTPException(status_code=404, detail="That highlight was not found.")
 
     job_id = uuid.uuid4().hex
-    archive_name = (
-        f"{safe_name(scan['profile']['username'], 'instagram', 30)}-highlights-"
-        f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-    )
-    session.archives[job_id] = {
+    job = {
+        "id": job_id,
         "target": target,
-        "titles": list(selected),
-        "archive_name": archive_name,
+        "highlight_id": request.highlight_id or "",
         "created_at": time.time(),
-        "status": "preparing",
+        "status": "working",
         "completed_highlights": 0,
         "total_highlights": len(highlights),
         "current_highlight": "",
+        "current_story": 0,
+        "current_story_total": 0,
+        "processed_items": 0,
+        "total_items": sum(int(item.get("item_count", 0)) for item in highlights),
         "downloaded_items": 0,
+        "reused_items": 0,
+        "failed_items": 0,
+        "errors": [],
         "error": "",
     }
+    session.jobs[job_id] = job
 
-    def hydrate_archive() -> None:
-        archive = session.archives.get(job_id)
-        if not archive:
-            return
+    def sync_library() -> None:
+        working_scan = scan
+        working_highlights = highlights
         try:
-            for index, highlight in enumerate(highlights, start=1):
-                archive["current_highlight"] = highlight["title"]
-                hydrate_highlight(session, highlight)
-                archive["completed_highlights"] = index
-
-            downloaded_items = sum(len(item["stories"]) for item in highlights)
-            if not downloaded_items:
-                raise HTTPException(
-                    status_code=400,
-                    detail="There are no stories to download.",
+            if not request.highlight_id:
+                with session.request_lock:
+                    refreshed_profile = session.client.user_info_by_username_v1(target)
+                    refreshed_highlights = all_user_highlights(
+                        session.client, str(refreshed_profile.pk)
+                    )
+                working_scan = normalize_scan(refreshed_profile, refreshed_highlights)
+                profile_pic_url = working_scan["profile"]["profile_pic_url"]
+                if profile_pic_url:
+                    working_scan["profile"]["profile_pic_url"] = proxy_media_url(
+                        session,
+                        profile_pic_url,
+                        f"{working_scan['profile']['username']}-profile.jpg",
+                    )
+                for refreshed_highlight in working_scan["highlights"]:
+                    refreshed_highlight["cover_url"] = proxy_media_url(
+                        session,
+                        refreshed_highlight["cover_url"],
+                        f"highlight-{refreshed_highlight['id']}-cover.jpg",
+                    )
+                working_highlights = working_scan["highlights"]
+                session.scans[target] = working_scan
+                job["total_highlights"] = len(working_highlights)
+                job["total_items"] = sum(
+                    int(item.get("item_count", 0)) for item in working_highlights
                 )
-            archive["downloaded_items"] = downloaded_items
-            archive["current_highlight"] = ""
-            archive["completed_at"] = time.time()
-            archive["status"] = "complete"
-        except HTTPException as exc:
-            archive["error"] = str(exc.detail)
-            archive["status"] = "error"
-        except Exception as exc:
-            archive["error"] = explain_instagram_error(exc).detail
-            archive["status"] = "error"
 
-    threading.Thread(target=hydrate_archive, daemon=True).start()
+            account_dir = account_directory(working_scan["profile"], create=True)
+            for index, highlight in enumerate(working_highlights, start=1):
+                job["current_highlight"] = highlight["title"]
+                try:
+                    with session.request_lock:
+                        detail = raw_highlight_detail(session.client, highlight["id"])
+                    highlight["title"] = str(
+                        model_value(detail, "title", "") or highlight["title"]
+                    )
+                    highlight["stories"] = normalize_stories(detail)
+                    highlight["item_count"] = len(highlight["stories"])
+                    highlight["stories_loaded"] = True
+                    detailed_cover = cover_url(detail)
+                    if detailed_cover and not highlight.get("cover_url"):
+                        highlight["cover_url"] = proxy_media_url(
+                            session,
+                            detailed_cover,
+                            f"highlight-{highlight['id']}-cover.jpg",
+                        )
+                    job["total_items"] = sum(
+                        len(item.get("stories") or [])
+                        if item.get("stories_loaded")
+                        else int(item.get("item_count", 0))
+                        for item in working_highlights
+                    )
+                    reconcile_highlight(session, account_dir, highlight, job)
+                except Exception as exc:
+                    detail_message = (
+                        str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+                    )
+                    job["failed_items"] += max(int(highlight.get("item_count", 0)), 1)
+                    job["errors"].append(f"{highlight['title']}: {detail_message}")
+                job["completed_highlights"] = index
+                save_account_manifest(
+                    account_dir,
+                    working_scan,
+                    full_sync=(
+                        not bool(request.highlight_id)
+                        and index == len(working_highlights)
+                    ),
+                )
+
+            if not working_highlights:
+                save_account_manifest(account_dir, working_scan, full_sync=True)
+            attach_library_state(working_scan)
+            job["current_highlight"] = ""
+            job["current_story"] = 0
+            job["current_story_total"] = 0
+            job["completed_at"] = time.time()
+            if job["errors"]:
+                job["status"] = "partial"
+                job["error"] = (
+                    f"{len(job['errors'])} item or highlight update failed. "
+                    "Run the update again to retry only what is still missing."
+                )
+            else:
+                job["status"] = "complete"
+        except Exception as exc:
+            job["error"] = str(exc)
+            job["status"] = "error"
+
+    threading.Thread(target=sync_library, daemon=True).start()
     return {"job_id": job_id}
 
 
@@ -858,82 +1508,109 @@ def get_job(
     session_token: str | None = Header(default=None, alias="X-Keepsake-Session"),
 ) -> dict[str, Any]:
     session = get_session(session_token)
-    archive = session.archives.get(job_id)
-    if not archive:
-        raise HTTPException(status_code=404, detail="Download link not found.")
-    scan = session.scans.get(archive["target"])
-    if not scan:
-        raise HTTPException(status_code=404, detail="The cached profile scan expired.")
-    selected = set(archive["titles"])
-    highlights = [
-        item for item in scan["highlights"] if not selected or item["title"] in selected
-    ]
-    total_items = sum(item["item_count"] for item in highlights)
-    return {
-        "id": job_id,
-        "status": archive["status"],
-        "username": scan["profile"]["username"],
-        "downloaded_items": archive["downloaded_items"],
-        "skipped_items": 0,
-        "total_items": total_items,
-        "current_highlight": archive["current_highlight"],
-        "current_story": archive["downloaded_items"],
-        "current_story_total": total_items,
-        "completed_highlights": archive["completed_highlights"],
-        "total_highlights": archive["total_highlights"],
-        "error": archive["error"],
-        "archive_name": archive["archive_name"],
-    }
+    job = session.jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Library update job not found.")
+    return dict(job)
 
 
-@app.get("/api/jobs/{job_id}/archive")
-def download_archive(job_id: str) -> StreamingResponse:
-    expire_inactive_sessions()
-    session: BrowserSession | None = None
-    archive: dict[str, Any] | None = None
-    with sessions_lock:
-        for candidate in browser_sessions.values():
-            if job_id in candidate.archives:
-                session = candidate
-                archive = candidate.archives[job_id]
-                candidate.last_seen = time.time()
-                break
-    if not session or not archive:
-        raise HTTPException(status_code=404, detail="This download link expired.")
-    if archive["status"] != "complete":
-        raise HTTPException(status_code=409, detail="This download is not ready yet.")
-    if time.time() - archive.get("completed_at", archive["created_at"]) > ARCHIVE_TTL_SECONDS:
-        session.archives.pop(job_id, None)
-        raise HTTPException(status_code=404, detail="This download link expired.")
-
-    scan = session.scans.get(archive["target"])
-    if not scan:
-        raise HTTPException(status_code=404, detail="The cached profile scan expired.")
-    selected = set(archive["titles"])
-    highlights = [
-        item for item in scan["highlights"] if not selected or item["title"] in selected
-    ]
-
+@app.get("/api/library/{user_id}/export")
+def export_library(
+    user_id: str,
+    highlight_id: str | None = Query(default=None),
+) -> StreamingResponse:
+    account_dir = find_account_directory(user_id)
+    if not account_dir:
+        raise HTTPException(status_code=404, detail="No local files were found for this profile.")
+    account_manifest = read_json(account_dir / "account.json")
+    username = safe_name(
+        str((account_manifest.get("profile") or {}).get("username", "")),
+        "instagram",
+        30,
+    )
     stream = zipstream.ZipStream(compress_type=zipstream.ZIP_STORED)
-    username_folder = safe_name(scan["profile"]["username"], "instagram", 30)
-    for highlight in highlights:
-        for story in highlight["stories"]:
-            archive_path = str(
-                Path(username_folder) / highlight["folder_name"] / story["filename"]
-            ).replace("\\", "/")
-            stream.add(
-                media_chunks(session, story["media_url"]),
-                arcname=archive_path,
+    added = 0
+    highlights_root = account_dir / "highlights"
+    for directory in highlights_root.iterdir() if highlights_root.exists() else []:
+        if not directory.is_dir():
+            continue
+        manifest = read_json(directory / "manifest.json")
+        if highlight_id and str(manifest.get("id", "")) != highlight_id:
+            continue
+        export_folder = (
+            f"{int(manifest.get('position', 0)) + 1:03d}__"
+            f"{safe_name(str(manifest.get('title', '')), 'Highlight', 60)}__"
+            f"ig_highlight_{safe_name(str(manifest.get('id', '')), 'unknown', 50)}"
+        )
+        for record in manifest.get("stories") or []:
+            if not isinstance(record, dict) or not record_file_is_valid(directory, record):
+                continue
+            path = local_record_path(directory, record)
+            if not path:
+                continue
+            relative_folder = Path(username) / export_folder
+            if record.get("removed_from_instagram"):
+                relative_folder /= "_removed_from_instagram"
+            stream.add_path(
+                path,
+                arcname=(relative_folder / str(record["filename"])).as_posix(),
             )
-
+            added += 1
+    if not added:
+        raise HTTPException(status_code=404, detail="There are no valid local files to export.")
+    suffix = f"-{highlight_id}" if highlight_id else ""
+    archive_name = (
+        f"{username}-saved-highlights{suffix}-"
+        f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    )
     return StreamingResponse(
         stream,
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{archive["archive_name"]}"',
+            "Content-Disposition": f'attachment; filename="{archive_name}"',
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@app.get("/api/library/media/{user_id}/{highlight_id}/{story_id}")
+def local_story_media(
+    user_id: str,
+    highlight_id: str,
+    story_id: str,
+    download: bool = False,
+) -> FileResponse:
+    account_dir = find_account_directory(user_id)
+    if not account_dir:
+        raise HTTPException(status_code=404, detail="That local account was not found.")
+    directory = find_highlight_directory(account_dir, highlight_id)
+    if not directory:
+        raise HTTPException(status_code=404, detail="That local highlight was not found.")
+    manifest = read_json(directory / "manifest.json")
+    record = next(
+        (
+            item for item in manifest.get("stories") or []
+            if isinstance(item, dict) and str(item.get("id", "")) == story_id
+        ),
+        None,
+    )
+    if not record or not record_file_is_valid(directory, record):
+        raise HTTPException(status_code=404, detail="That local story file is missing or invalid.")
+    path = local_record_path(directory, record)
+    if not path:
+        raise HTTPException(status_code=404, detail="That local story file is unavailable.")
+    media_type = {
+        ".mp4": "video/mp4",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }.get(path.suffix.casefold(), "image/jpeg")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=record["filename"] if download else None,
+        content_disposition_type="attachment" if download else "inline",
+        headers={"Cache-Control": "private, max-age=300"},
     )
 
 
