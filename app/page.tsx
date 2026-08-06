@@ -29,6 +29,7 @@ type ScanResult = {
     profile_pic_url: string;
     is_private: boolean;
     downloaded_stories: number;
+    undownloaded_stories: number;
     has_local: boolean;
     is_old: boolean;
     old_highlights: number;
@@ -166,6 +167,8 @@ export default function Home() {
   const [highlightPageLoading, setHighlightPageLoading] = useState(false);
 
   const totalHighlightPages = scan?.total_pages ?? 0;
+  const undownloadedStories = scan?.profile.undownloaded_stories ?? 0;
+  const canContinueDownload = Boolean(scan?.profile.has_local && undownloadedStories > 0);
   const firstVisibleHighlight = scan
     ? (scan.page - 1) * scan.page_size
     : 0;
@@ -408,7 +411,7 @@ export default function Home() {
       const summary = `${job.downloaded_items} downloaded · ${job.reused_items} already valid`;
       setMessage(
         job.status === "partial"
-          ? `${summary} · ${job.failed_items} failed. Update again to retry missing files.`
+          ? `${summary} · ${job.failed_items} failed. Continue the download to retry missing files.`
           : `${summary}. Your local library is up to date.`,
       );
     } catch (error) {
@@ -540,9 +543,18 @@ export default function Home() {
                   onClick={() => startDownload()}
                   disabled={(!scan.total_highlights && !scan.profile.has_local) || downloadTarget !== null}
                   aria-busy={downloadTarget === "all"}
+                  aria-label={canContinueDownload
+                    ? `Continue download. ${undownloadedStories} stories left.`
+                    : undefined}
                 >
                   {downloadTarget === "all" ? (
                     <><span className="button-spinner" /> {downloadProgress}</>
+                  ) : canContinueDownload ? (
+                    <>
+                      Continue download
+                      <span className="remaining-count">{undownloadedStories.toLocaleString("en-US")} left</span>
+                      <span aria-hidden="true">↓</span>
+                    </>
                   ) : scan.profile.has_local ? (
                     <>Update account <span aria-hidden="true">↻</span></>
                   ) : (

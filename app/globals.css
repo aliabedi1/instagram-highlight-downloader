@@ -947,6 +947,17 @@ h1 em { color: var(--peach); font-weight: 500; }
 
 .profile-actions button:disabled { opacity: .6; cursor: wait; }
 
+.profile-actions .remaining-count {
+  padding: 4px 7px;
+  color: #fff8fc;
+  background: #ffffff20;
+  border-radius: 999px;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .profile-actions .export-button {
   color: var(--plum);
   background: #fffdfb;

@@ -169,6 +169,10 @@ body {
   background: light-dark(#71376f, #76417a);
 }
 
+.profile-actions .remaining-count {
+  background: light-dark(#ffffff20, #fff8fc24);
+}
+
 .connect-line {
   color: light-dark(#918992, #a99da7);
 }

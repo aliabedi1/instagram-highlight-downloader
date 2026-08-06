@@ -576,12 +576,17 @@ def highlight_library_state(
 def attach_library_state(scan: dict[str, Any]) -> None:
     account_dir = account_directory(scan["profile"])
     saved_total = 0
+    undownloaded_total = 0
     old_highlights = 0
     latest_update = ""
     for highlight in scan["highlights"]:
         state = highlight_library_state(account_dir, highlight)
         highlight.update(state)
         saved_total += state["downloaded_count"] + state["removed_count"]
+        undownloaded_total += max(
+            int(highlight.get("item_count", 0) or 0) - state["downloaded_count"],
+            0,
+        )
         old_highlights += int(state["is_old"])
         latest_update = max(latest_update, str(state["last_updated_at"]))
     remote_ids = {str(highlight["id"]) for highlight in scan["highlights"]}
@@ -600,6 +605,7 @@ def attach_library_state(scan: dict[str, Any]) -> None:
     scan["profile"].update(
         {
             "downloaded_stories": saved_total,
+            "undownloaded_stories": undownloaded_total,
             "has_local": saved_total > 0,
             "is_old": old_highlights > 0,
             "old_highlights": old_highlights,
